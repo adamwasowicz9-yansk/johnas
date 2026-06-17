@@ -32,7 +32,10 @@ jobs:
       - name: Zainstaluj zależności
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y lz4 brotli python3 python3-pip zip unzip tar pv
+          sudo apt-get install -y \
+            lz4 brotli python3 python3-pip \
+            python3-protobuf python3-crypto \
+            zip unzip tar pv wget curl
           pip3 install gdown
 
       # ── Sprawdź wolne miejsce ────────────────────────────────────────────
@@ -82,7 +85,8 @@ jobs:
         run: |
           mkdir -p base_extracted
           cd base_extracted
-          head -c -33 ../base_fw/AP_base.tar.md5 | tar x
+          # Bezpieczne usunięcie 33-bajtowego suffixu MD5
+          tail -c +33 ../base_fw/AP_base.tar.md5 | tar x
           ls -lh
           rm ../base_fw/AP_base.tar.md5
 
@@ -98,13 +102,14 @@ jobs:
           done
           ls -lh *.img 2>/dev/null || echo "Brak .img"
 
-      # ── lpunpack – wyciągnij partycje z super.img ───────────────────────
-      - name: Zainstaluj lpunpack
+      # ── lpunpack – wyciągnij partycje z super.img ──────────────────────
+      - name: Zainstaluj lpunpack (z Twojego źródła)
         run: |
-          wget -q https://dl.google.com/android/repository/platform-tools-latest-linux.zip
-          unzip -q platform-tools-latest-linux.zip platform-tools/lpunpack
-          sudo mv platform-tools/lpunpack /usr/local/bin/
-          rm -rf platform-tools platform-tools-latest-linux.zip
+          wget -q --header="User-Agent: Mozilla/5.0" \
+            https://github.com/whyshhnuv/lpunpack-lpmake-mirror/raw/refs/heads/Linux-debian/binary/lpunpack
+          chmod +x lpunpack
+          sudo mv lpunpack /usr/local/bin/
+          lpunpack --help || echo "lpunpack installed"
 
       - name: Wypakuj partycje z super.img
         run: |
@@ -117,13 +122,13 @@ jobs:
             cp base_extracted/*.img partitions/ 2>/dev/null || true
           fi
 
-      # ── Pobierz narzędzia BLOCK OTA (AOSP) ──────────────────────────────
+      # ── Pobierz narzędzia BLOCK OTA (commaai) ──────────────────────────
       - name: Pobierz narzędzia BLOCK OTA
         run: |
           wget -q -O blockimgdiff.py \
-            https://raw.githubusercontent.com/LineageOS/android_tools_releasetools/lineage-21/blockimgdiff.py
+            https://raw.githubusercontent.com/commaai/android_build/refs/heads/master/tools/releasetools/blockimgdiff.py
           wget -q -O rangelib.py \
-            https://raw.githubusercontent.com/LineageOS/android_tools_releasetools/lineage-21/rangelib.py
+            https://raw.githubusercontent.com/commaai/android_build/refs/heads/master/tools/releasetools/rangelib.py
 
       # ── Zastosuj patche dla każdej partycji ─────────────────────────────
       - name: Zastosuj BLOCK OTA patche
@@ -192,11 +197,12 @@ jobs:
             fi
           done
 
-      # ── Spakuj nowy AP tar.md5 ───────────────────────────────────────────
+      # ── Spakuj nowy AP tar.md5 (dynamiczna nazwa) ──────────────────────
       - name: Spakuj AP tar.md5
         run: |
           mkdir -p final
-          OUTPUT="AP_S901EXXUDHZCB_patched.tar"
+          BASE_NAME=$(basename "$(find base_fw/ -name "*.tar.md5" 2>/dev/null | head -1)" .tar.md5 2>/dev/null || echo "AP_patched")
+          OUTPUT="${BASE_NAME}_patched.tar"
 
           cd output_partitions
           tar -H ustar -c *.img -f "../final/$OUTPUT"
