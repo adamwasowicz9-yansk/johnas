@@ -53,17 +53,34 @@ jobs:
           fi
           ls -lh ota/
 
-      # ── Pobierz bazowy AP (ZIP) i rozpakuj go (STAŁE ID) ──────────────
-      - name: Pobierz bazowy AP z Google Drive i rozpakuj ZIP
+      # ── Pobierz bazowy AP z GitHub Actions Artifact i rozpakuj ZIP ──────
+      - name: Pobierz bazowy AP z GitHub Artifact i rozpakuj ZIP
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p base_fw
-          gdown "1X9iFRZO6Us88q-a3gGxJKdxAOAaZLobx" -O base_fw/base.zip
 
+          echo "⬇️  Pobieram artefakt z GitHub..."
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -L \
+            "https://api.github.com/repos/adamwasowicz9-yansk/urban-winner/actions/artifacts/7705052240/zip" \
+            -o base_fw/base.zip
+
+          SIZE=$(stat -c%s base_fw/base.zip 2>/dev/null || echo 0)
+          if [ "$SIZE" -lt 1048576 ]; then
+            echo "❌ Pobrany plik ma tylko $SIZE bajtów – sprawdź token GH_PAT"
+            exit 1
+          fi
+
+          echo "📦 Rozpakowuję ZIP..."
           unzip -q base_fw/base.zip -d base_fw/
 
           TAR_MD5=$(find base_fw/ -maxdepth 1 -name "*.tar.md5" | head -1)
           if [ -z "$TAR_MD5" ]; then
             echo "❌ Nie znaleziono pliku .tar.md5 w archiwum ZIP"
+            ls -lh base_fw/
             exit 1
           fi
 
@@ -103,13 +120,11 @@ jobs:
       # ── Zainstaluj lpunpack i simg2img ──────────────────────────────────
       - name: Zainstaluj lpunpack i simg2img
         run: |
-          # lpunpack z Twojego źródła
           wget -q --header="User-Agent: Mozilla/5.0" \
             https://github.com/whyshhnuv/lpunpack-lpmake-mirror/raw/refs/heads/Linux-debian/binary/lpunpack
           chmod +x lpunpack
           sudo mv lpunpack /usr/local/bin/
 
-          # simg2img z Rprop/aosp15_partition_tools
           wget -q --header="User-Agent: Mozilla/5.0" \
             https://github.com/Rprop/aosp15_partition_tools/raw/refs/heads/main/linux_glibc_x86_64/simg2img
           chmod +x simg2img
