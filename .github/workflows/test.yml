@@ -1,47 +1,27 @@
-name: Pobierz plik i dodaj do Release
+name: Download OTA
 
 on:
   workflow_dispatch:
-    inputs:
-      file_url:
-        description: 'Wklej bezpośredni link do pliku'
-        required: true
-        type: string
-      tag_name:
-        description: 'Nazwa tagu / wersji (np. v1.0.0)'
-        required: true
-        default: 'v1.0.0'
-        type: string
 
 jobs:
-  release:
+  download:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write  # Wymagane, aby GitHub Actions mogło utworzyć Release
 
     steps:
-    - name: Utwórz czysty katalog roboczy
-      uses: actions/checkout@v4
+      - name: Download OTA from PixelDrain
+        run: |
+          mkdir -p ota
 
-    - name: Pobierz plik z linku
-      run: |
-        echo "Pobieranie pliku z: ${{ github.event.inputs.file_url }}"
-        # Pobieramy plik zachowując jego oryginalną nazwę
-        curl -LJO "${{ github.event.inputs.file_url }}"
-        
-        # Wyświetlamy pobrane pliki w celach diagnostycznych
-        echo "Pobrane pliki:"
-        ls -la
+          curl -L \
+            "https://pixeldrain.com/api/file/pWud9sse?download" \
+            -o ota.zip
 
-    - name: Stwórz GitHub Release i załaduj plik
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: ${{ github.event.inputs.tag_name }}
-        name: Release ${{ github.event.inputs.tag_name }}
-        draft: false
-        prerelease: false
-        # Ta linijka automatycznie złapie każdy plik, który pobraliśmy za pomocą curl
-        files: |
-          *
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ls -lh ota.zip
+
+      - name: Upload OTA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ota
+          path: ota.zip
+          if-no-files-found: error
+          retention-days: 7
