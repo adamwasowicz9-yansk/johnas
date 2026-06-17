@@ -57,7 +57,7 @@ jobs:
       - name: Pobierz bazowy AP z Google Drive i rozpakuj ZIP
         run: |
           mkdir -p base_fw
-          gdown "1ugH_mcYrIwuPgUJh4qeeE4AucdzbgNHI" -O base_fw/base.zip
+          gdown "1X9iFRZO6Us88q-a3gGxJKdxAOAaZLobx" -O base_fw/base.zip
 
           unzip -q base_fw/base.zip -d base_fw/
 
