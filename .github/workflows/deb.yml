@@ -1,0 +1,213 @@
+name: Samsung OTA Diagnostics
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Zwolnij miejsce na dysku
+        run: |
+          echo "Przed:"
+          df -h /
+
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY"
+
+          sudo apt-get clean
+          docker rmi $(docker images -q) 2>/dev/null || true
+
+          echo "Po:"
+          df -h /
+
+      - name: Zainstaluj zależności
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            lz4 brotli python3 python3-pip \
+            zip unzip tar pv wget curl file
+
+          pip3 install gdown
+
+      - name: Sprawdź dysk
+        run: df -h
+
+      - name: Pobierz OTA zip z Google Drive
+        run: |
+          mkdir -p ota
+
+          gdown "1YnKZ9qrNmfaEDrI10pkdkSCVevBoUxBh" \
+            -O ota/ota.zip
+
+          SIZE=$(stat -c%s ota/ota.zip 2>/dev/null || echo 0)
+
+          if [ "$SIZE" -lt 1048576 ]; then
+            echo "❌ OTA ZIP wygląda na uszkodzony ($SIZE bajtów)"
+            exit 1
+          fi
+
+          ls -lh ota/
+
+      - name: Pobierz bazowy AP z GitHub Artifact
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p base_fw
+
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -L \
+            "https://api.github.com/repos/adamwasowicz9-yansk/urban-winner/actions/artifacts/7705052240/zip" \
+            -o base_fw/base.zip
+
+          SIZE=$(stat -c%s base_fw/base.zip 2>/dev/null || echo 0)
+
+          if [ "$SIZE" -lt 1048576 ]; then
+            echo "❌ Artifact ZIP wygląda na uszkodzony ($SIZE bajtów)"
+            exit 1
+          fi
+
+          unzip -q base_fw/base.zip -d base_fw/
+
+          TAR_MD5=$(find base_fw -name "*.tar.md5" | head -1)
+
+          if [ -z "$TAR_MD5" ]; then
+            echo "❌ Nie znaleziono AP.tar.md5"
+            find base_fw
+            exit 1
+          fi
+
+          mv "$TAR_MD5" base_fw/AP_base.tar.md5
+
+          ls -lh base_fw/
+
+      - name: Wypakuj OTA
+        run: |
+          mkdir -p ota_extracted
+
+          unzip -q ota/ota.zip -d ota_extracted
+
+          echo "===== OTA ====="
+          ls -lah ota_extracted/
+
+          echo ""
+          echo "===== PEŁNA LISTA OTA ====="
+          find ota_extracted -type f | sort
+
+      - name: Wypakuj AP
+        run: |
+          mkdir -p base_extracted
+
+          cd base_extracted
+          head -c -33 ../base_fw/AP_base.tar.md5 | tar x
+          cd ..
+
+          echo "===== AP ====="
+          ls -lah base_extracted/
+
+      - name: Zdekompresuj obrazy LZ4
+        run: |
+          cd base_extracted
+
+          for f in *.lz4; do
+            [ -f "$f" ] || continue
+
+            echo "Dekompresuję: $f"
+
+            lz4 -d "$f" "${f%.lz4}"
+
+            rm "$f"
+          done
+
+          cd ..
+
+          echo "===== IMG ====="
+          ls -lah base_extracted/
+
+      - name: Zainstaluj lpunpack i simg2img
+        run: |
+          sudo apt-get install -y android-sdk-libsparse-utils
+
+          wget -q \
+            --header="User-Agent: Mozilla/5.0" \
+            https://github.com/whyshhnuv/lpunpack-lpmake-mirror/raw/refs/heads/Linux-debian/binary/lpunpack
+
+          chmod +x lpunpack
+
+          sudo mv lpunpack /usr/local/bin/
+
+      - name: Wypakuj partycje z super.img
+        run: |
+          mkdir -p partitions
+
+          if [ ! -f base_extracted/super.img ]; then
+            echo "❌ Nie znaleziono super.img"
+            ls -lah base_extracted/
+            exit 1
+          fi
+
+          echo "===== FILE SUPER ====="
+          file base_extracted/super.img
+
+          if file base_extracted/super.img | grep -q "Android sparse image"; then
+            echo "Sparse -> Raw"
+
+            simg2img \
+              base_extracted/super.img \
+              base_extracted/super_raw.img
+
+            lpunpack \
+              base_extracted/super_raw.img \
+              partitions/
+          else
+            lpunpack \
+              base_extracted/super.img \
+              partitions/
+          fi
+
+      - name: Diagnostyka partycji
+        run: |
+          echo "========================================"
+          echo "LISTA PARTYCJI"
+          echo "========================================"
+
+          ls -lah partitions/
+
+          echo ""
+          echo "========================================"
+          echo "PEŁNA LISTA PLIKÓW"
+          echo "========================================"
+
+          find partitions -type f | sort
+
+          echo ""
+          echo "========================================"
+          echo "ROZMIARY"
+          echo "========================================"
+
+          du -sh partitions/*
+
+          echo ""
+          echo "========================================"
+          echo "TYPY PLIKÓW"
+          echo "========================================"
+
+          file partitions/* || true
+
+      - name: Stop po diagnostyce
+        run: |
+          echo ""
+          echo "✅ Diagnostyka zakończona."
+          echo "Wklej log kroku 'Diagnostyka partycji'."
+          exit 1
