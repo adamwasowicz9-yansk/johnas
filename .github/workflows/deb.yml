@@ -1,13 +1,121 @@
-name: Test BlockImageUpdate
+name: TEST ODM BlockImageUpdate
 
 on:
   workflow_dispatch:
 
 jobs:
-  test:
+  test-odm:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            unzip \
+            lz4 \
+            wget \
+            curl \
+            file \
+            android-sdk-libsparse-utils
+
+      - name: Download OTA from PixelDrain
+        run: |
+          mkdir -p ota
+
+          curl -L \
+            "https://pixeldrain.com/api/file/pWud9sse?download" \
+            -o ota/ota.zip
+
+          ls -lh ota/ota.zip
+
+      - name: Extract OTA
+        run: |
+          mkdir -p ota_extracted
+
+          unzip -q ota/ota.zip -d ota_extracted
+
+          echo "===== ODM FILES ====="
+          ls -lh ota_extracted/odm*
+
+      - name: Download base AP artifact
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p base_fw
+
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -L \
+            "https://api.github.com/repos/adamwasowicz9-yansk/urban-winner/actions/artifacts/7705052240/zip" \
+            -o base_fw/base.zip
+
+          unzip -q base_fw/base.zip -d base_fw
+
+      - name: Extract AP tar
+        run: |
+          mkdir -p base_extracted
+
+          TARFILE=$(find base_fw -name "*.tar.md5" | head -1)
+
+          echo "Found:"
+          echo "$TARFILE"
+
+          cd base_extracted
+          head -c -33 "../$TARFILE" | tar x
+          cd ..
+
+      - name: Decompress lz4
+        run: |
+          cd base_extracted
+
+          for f in *.lz4; do
+            [ -f "$f" ] || continue
+
+            echo "Decompressing $f"
+
+            lz4 -d "$f" "${f%.lz4}"
+
+            rm "$f"
+          done
+
+      - name: Extract odm.img
+        run: |
+          mkdir -p partitions
+
+          if [ -f base_extracted/super.img ]; then
+
+            if file base_extracted/super.img | grep -q "Android sparse image"; then
+              simg2img \
+                base_extracted/super.img \
+                base_extracted/super_raw.img
+
+              wget -q \
+                https://github.com/whyshhnuv/lpunpack-lpmake-mirror/raw/refs/heads/Linux-debian/binary/lpunpack
+
+              chmod +x lpunpack
+
+              ./lpunpack \
+                base_extracted/super_raw.img \
+                partitions
+            else
+              wget -q \
+                https://github.com/whyshhnuv/lpunpack-lpmake-mirror/raw/refs/heads/Linux-debian/binary/lpunpack
+
+              chmod +x lpunpack
+
+              ./lpunpack \
+                base_extracted/super.img \
+                partitions
+            fi
+          fi
+
+          ls -lh partitions/
+
       - name: Download IMG Patch Tools
         run: |
           wget -q \
@@ -18,17 +126,26 @@ jobs:
 
           chmod +x IMG_Patch_Tools_0.3/Linux_x64/*
 
-      - name: Show Help
+      - name: Patch ODM
         run: |
-          echo "===== BlockImageUpdate ====="
-          ./IMG_Patch_Tools_0.3/Linux_x64/BlockImageUpdate || true
+          cp partitions/odm.img odm_test.img
 
-          echo ""
+          echo "===== BEFORE ====="
+          ls -lh odm_test.img
+          file odm_test.img
 
-          echo "===== BlockImageVerify ====="
-          ./IMG_Patch_Tools_0.3/Linux_x64/BlockImageVerify || true
+          ./IMG_Patch_Tools_0.3/Linux_x64/BlockImageUpdate \
+            odm_test.img \
+            ota_extracted/odm.transfer.list \
+            ota_extracted/odm.new.dat \
+            ota_extracted/odm.patch.dat
 
-          echo ""
+          echo "===== AFTER ====="
+          ls -lh odm_test.img
+          file odm_test.img
 
-          echo "===== ApplyPatch ====="
-          ./IMG_Patch_Tools_0.3/Linux_x64/ApplyPatch || true
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: odm_test_patched
+          path: odm_test.img
