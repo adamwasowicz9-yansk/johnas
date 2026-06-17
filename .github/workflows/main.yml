@@ -1,0 +1,30 @@
+name: GDrive ZIP to Artifact
+
+on:
+  workflow_dispatch: # Pozwala na ręczne uruchomienie z panelu GitHub Actions
+
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install gdown
+        run: |
+          # Aktualizacja i instalacja narzędzia gdown przez pip
+          pip install gdown
+
+      - name: Download ZIP from Google Drive
+        run: |
+          mkdir -p output
+          # Pobieramy plik przy użyciu Twojego ID oraz pełnej, oryginalnej nazwy pliku ROMu
+          gdown --id "1ugH_mcYrIwuPgUJh4qeeE4AucdzbgNHI" -O "output/AP_S901EXXSDGZB6_S901EXXSDGZB6_MQB106584562_REV00_user_low_ship_MULTI_CERT_meta_OS16.tar.md5.zip" --remaining-ok
+
+      - name: Upload as GitHub Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # Nazwa artefaktu, którą klikniesz w panelu GitHub, aby go pobrać
+          name: rom-samsung-s22
+          # Wskazujemy dokładną ścieżkę do pobranego wyżej pliku
+          path: "output/AP_S901EXXSDGZB6_S901EXXSDGZB6_MQB106584562_REV00_user_low_ship_MULTI_CERT_meta_OS16.tar.md5.zip"
+          # Czas przechowywania pliku w GitHubie (w dniach)
+          retention-days: 1
