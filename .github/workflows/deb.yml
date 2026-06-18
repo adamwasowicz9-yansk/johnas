@@ -1,151 +1,218 @@
-name: TEST ODM BlockImageUpdate
+name: fhutem, Vendor, Product ZIP)
 
 on:
   workflow_dispatch:
 
 jobs:
-  test-odm:
+  patch:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
+      # ── Zwolnienie miejsca na dysku ─────────────────────────────────────
+      - name: Free disk space
+        run: |
+          echo "Before:"
+          df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY"
+          sudo apt-get clean
+          docker rmi $(docker images -q) 2>/dev/null || true
+          echo "After:"
+          df -h /
+
+      # ── Pobieranie oprogramowania i artefaktów ──────────────────────────
+      - name: Download AP artifact
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p base_fw
+          curl -L \
+            -H "Authorization: Bearer $GH_PAT" \
+            -H "Accept: application/vnd.github+json" \
+            -o ap.zip \
+            "https://api.github.com/repos/durenstudnio/urban-winner/actions/artifacts/7705052240/zip"
+          unzip -q ap.zip -d base_fw
+
+      - name: Download OTA artifact
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p ota
+          curl -L \
+            -H "Authorization: Bearer $GH_PAT" \
+            -H "Accept: application/vnd.github+json" \
+            -o ota.zip \
+            "https://api.github.com/repos/durenstudnio/johnas/actions/artifacts/7709183127/zip"
+          unzip -q ota.zip -d ota
+
+      - name: Download CSC package
+        run: |
+          mkdir -p csc_fw
+          wget -nv "https://github.com/adamwasowicz9-yansk/johnas/releases/download/v69/m1v7kv.zip" -O m1v7kv.zip
+          unzip -q m1v7kv.zip -d csc_fw
+
+      # ── Instalacja dependencies systemowych ─────────────────────────────
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            unzip \
-            lz4 \
-            wget \
-            curl \
-            file \
-            android-sdk-libsparse-utils
+          sudo apt-get install -y unzip zip lz4 wget file android-sdk-libsparse-utils python3
+          
+          echo "Pobieranie libssl1.0.0..."
+          wget -nv https://github.com/danjekb/tools/raw/refs/heads/main/libssl1.0.0_1.0.2g-1ubuntu4.20_amd64.deb
+          sudo dpkg -i libssl1.0.0_*.deb || true
+          sudo ldconfig
 
-      - name: Download OTA from PixelDrain
-        run: |
-          mkdir -p ota
-
-          curl -L \
-            "https://pixeldrain.com/api/file/pWud9sse?download" \
-            -o ota/ota.zip
-
-          ls -lh ota/ota.zip
-
-      - name: Extract OTA
-        run: |
-          mkdir -p ota_extracted
-
-          unzip -q ota/ota.zip -d ota_extracted
-
-          echo "===== ODM FILES ====="
-          ls -lh ota_extracted/odm*
-
-      - name: Download base AP artifact
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p base_fw
-
-          curl -fsSL \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -L \
-            "https://api.github.com/repos/adamwasowicz9-yansk/urban-winner/actions/artifacts/7705052240/zip" \
-            -o base_fw/base.zip
-
-          unzip -q base_fw/base.zip -d base_fw
-
-      - name: Extract AP tar
-        run: |
-          mkdir -p base_extracted
-
-          TARFILE=$(find base_fw -name "*.tar.md5" | head -1)
-
-          echo "Found:"
-          echo "$TARFILE"
-
-          cd base_extracted
-          head -c -33 "../$TARFILE" | tar x
-          cd ..
-
-      - name: Decompress lz4
-        run: |
-          cd base_extracted
-
-          for f in *.lz4; do
-            [ -f "$f" ] || continue
-
-            echo "Decompressing $f"
-
-            lz4 -d "$f" "${f%.lz4}"
-
-            rm "$f"
-          done
-
-      - name: Extract odm.img
-        run: |
-          mkdir -p partitions
-
-          if [ -f base_extracted/super.img ]; then
-
-            if file base_extracted/super.img | grep -q "Android sparse image"; then
-              simg2img \
-                base_extracted/super.img \
-                base_extracted/super_raw.img
-
-              wget -q \
-                https://github.com/whyshhnuv/lpunpack-lpmake-mirror/raw/refs/heads/Linux-debian/binary/lpunpack
-
-              chmod +x lpunpack
-
-              ./lpunpack \
-                base_extracted/super_raw.img \
-                partitions
-            else
-              wget -q \
-                https://github.com/whyshhnuv/lpunpack-lpmake-mirror/raw/refs/heads/Linux-debian/binary/lpunpack
-
-              chmod +x lpunpack
-
-              ./lpunpack \
-                base_extracted/super.img \
-                partitions
-            fi
-          fi
-
-          ls -lh partitions/
+          echo "Pobieranie lpunpack..."
+          wget -nv -O lpunpack https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpunpack
+          
+          chmod +x lpunpack
+          sudo cp lpunpack /usr/local/bin/
 
       - name: Download IMG Patch Tools
         run: |
-          wget -q \
-            https://github.com/erfanoabdi/imgpatchtools/releases/download/0.3/IMG_Patch_Tools_0.3.zip \
-            -O imgpatchtools.zip
-
-          unzip -q imgpatchtools.zip
-
+          wget -nv https://github.com/erfanoabdi/imgpatchtools/releases/download/0.3/IMG_Patch_Tools_0.3.zip
+          unzip -q IMG_Patch_Tools_0.3.zip
           chmod +x IMG_Patch_Tools_0.3/Linux_x64/*
 
-      - name: Patch ODM
+      # ── Ekstrakcja paczek ───────────────────────────────────────────────
+      - name: Extract OTA
         run: |
-          cp partitions/odm.img odm_test.img
+          mkdir ota_extracted
+          OTAFILE=$(find ota -type f | head -1)
+          unzip -q "$OTAFILE" -d ota_extracted
 
-          echo "===== BEFORE ====="
-          ls -lh odm_test.img
-          file odm_test.img
+      - name: Wypakuj AP z artefaktu (obsługa tar.md5)
+        run: |
+          mkdir -p base_extracted
+          TARFILE=$(find base_fw -name "*.tar.md5" | head -1)
+          if [ -n "$TARFILE" ]; then
+            echo "Znaleziono AP jako tar.md5: $TARFILE"
+            head -c -33 "$TARFILE" | tar -x -C base_extracted/
+          else
+            TARFILE=$(find base_fw -name "*.tar" | head -1)
+            if [ -n "$TARFILE" ]; then
+              echo "Znaleziono AP jako .tar: $TARFILE"
+              tar -x -f "$TARFILE" -C base_extracted/
+            fi
+          fi
 
-          ./IMG_Patch_Tools_0.3/Linux_x64/BlockImageUpdate \
-            odm_test.img \
-            ota_extracted/odm.transfer.list \
-            ota_extracted/odm.new.dat \
-            ota_extracted/odm.patch.dat
+          find base_extracted -name "*.lz4" -exec cp {} base_extracted/ \; 2>/dev/null || true
+          find base_extracted -name "*.img" -exec cp {} base_extracted/ \; 2>/dev/null || true
 
-          echo "===== AFTER ====="
-          ls -lh odm_test.img
-          file odm_test.img
+          echo "=== Zawartość folderu bazowego po ekstrakcji ==="
+          ls -lh base_extracted/
 
-      - name: Upload result
+      - name: Extract CSC
+        run: |
+          mkdir csc_extracted
+          cd csc_extracted
+          CSCFILE=$(find ../csc_fw -name "*.tar.md5" | head -1)
+          head -c -33 "$CSCFILE" | tar xf -
+
+      # ── Dekompresja lz4 dla bazy AP ─────────────────────────────────────
+      - name: Zdekompresuj obrazy lz4
+        run: |
+          cd base_extracted
+          for f in *.lz4; do
+            [ -f "$f" ] || continue
+            echo "Dekompresuję: $f"
+            lz4 -d "$f" "${f%.lz4}"
+            rm "$f"
+          done
+          echo "=== Rozpakowane obrazy bazy ==="
+          ls -lh *.img 2>/dev/null || echo "Brak .img"
+
+      # ── Rozbijanie kontenera super.img na podobrazy ──────────────────────
+      - name: Unpack super.img to get sub-images
+        run: |
+          mkdir -p partitions
+          
+          SUPER_PATH=$(find base_extracted -name "super.img" | head -1)
+          
+          if [ -z "$SUPER_PATH" ]; then
+            echo "BŁĄD: Nie znaleziono pliku super.img w base_extracted!"
+            ls -R base_extracted
+            exit 1
+          fi
+
+          if file "$SUPER_PATH" | grep -q "Android sparse image"; then
+            echo "Converting sparse super.img to raw..."
+            simg2img "$SUPER_PATH" base_extracted/super_raw.img
+            lpunpack base_extracted/super_raw.img partitions/
+          else
+            lpunpack "$SUPER_PATH" partitions/
+          fi
+          
+          echo "===== Extracted partitions from super ====="
+          ls -lh partitions/
+
+      # ── Łatanie partycji dynamicznych przez BlockImageUpdate ─────────────
+      - name: Patch ALL dynamic partitions
+        run: |
+          echo "===== STARTING AUTOMATIC LOOP PATCHING ====="
+          
+          for list in ota_extracted/*.transfer.list; do
+            [ -e "$list" ] || continue
+            part_name=$(basename "$list" .transfer.list)
+            
+            echo "Processing partition: $part_name"
+            
+            if [ -f "partitions/${part_name}.img" ]; then
+              ./IMG_Patch_Tools_0.3/Linux_x64/BlockImageUpdate \
+                "partitions/${part_name}.img" \
+                "ota_extracted/${part_name}.transfer.list" \
+                "ota_extracted/${part_name}.new.dat" \
+                "ota_extracted/${part_name}.patch.dat"
+            else
+              echo "WARNING: Base image for $part_name not found in partitions, skipping!"
+            fi
+          done
+
+      # ── Pakowanie wybranych partycji do ZIP ──────────────────────────────
+      - name: Pakowanie system, vendor i product do ZIP
+        run: |
+          mkdir -p final_output
+          
+          echo "=== Sprawdzanie dostępności załatanych obrazów ==="
+          ls -lh partitions/
+          
+          # Agresywne czyszczenie ciężkich folderów, żeby nie zapchać dysku przed pakowaniem zip
+          echo "Czyszczenie pozostałości w celu odzyskania miejsca..."
+          rm -rf base_fw ota ota_extracted base_extracted csc_fw csc_extracted
+
+          echo "=== Pakowanie wybranych partycji do ZIP ==="
+          cd partitions
+          
+          ZIP_NAME="Patched_ROM_Images.zip"
+          
+          # Pakujemy tylko system.img, vendor.img i product.img (jeśli istnieją)
+          zip -9 "../final_output/$ZIP_NAME" system.img vendor.img product.img || true
+          
+          cd ..
+          
+          echo "=== Zawartość folderu wyjściowego ==="
+          ls -lh final_output/
+          
+          echo "=== Wolne miejsce na dysku ==="
+          df -h /
+
+      # ── Upload do GitHub Artifacts (Zapas) ──────────────────────────────
+      - name: Upload ZIP do Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: odm_test_patched
-          path: odm_test.img
+          name: Patched_ROM_ZIP
+          path: final_output/*.zip
+          retention-days: 5
+
+      # ── Upload na gofile.io ──────────────────────────────────────────────
+      - name: Upload na gofile.io
+        uses: ahnafnafee/action-upload-gofile@v3.0.0
+        with:
+          file: final_output/*.zip
