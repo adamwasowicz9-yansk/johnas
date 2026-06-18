@@ -70,7 +70,7 @@ jobs:
             file
 
           wget -q \
-            http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.0.0_1.0.2n-1ubuntu5.13_amd64.deb
+            http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.0.0_1.0.2n-1ubuntu5.13_amd64.deb
 
           sudo dpkg -i libssl1.0.0_1.0.2n-1ubuntu5.13_amd64.deb || true
 
