@@ -1,0 +1,54 @@
+name: GDrive to GitHub Artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      gdrive_url:
+        description: "Google Drive file URL"
+        required: true
+        type: string
+
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          python3 -m pip install --upgrade pip
+          pip3 install gdown
+
+      - name: Download from Google Drive
+        run: |
+          mkdir -p output
+
+          URL="${{ github.event.inputs.gdrive_url }}"
+
+          echo "Downloading..."
+          gdown --fuzzy --continue "$URL" -O output/downloaded_file
+
+          echo "Downloaded files:"
+          ls -lah output
+
+      - name: Detect archive
+        run: |
+          FILE=$(find output -type f | head -n1)
+
+          if file "$FILE" | grep -qi zip; then
+            mv "$FILE" output/archive.zip
+          elif file "$FILE" | grep -qi "7-zip"; then
+            mv "$FILE" output/archive.7z
+          elif file "$FILE" | grep -qi rar; then
+            mv "$FILE" output/archive.rar
+          fi
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: downloaded-file
+          path: output/
+          retention-days: 7
