@@ -193,7 +193,7 @@ jobs:
           ZIP_NAME="Patched_ROM_Images.zip"
           
           # Pakujemy tylko system.img, vendor.img i product.img (jeśli istnieją)
-          zip -9 "../final_output/$ZIP_NAME" system.img vendor.img product.img || true
+          zip -9 "../final_output/$ZIP_NAME" system.img system_ext.img product.img || true
           
           cd ..
           
