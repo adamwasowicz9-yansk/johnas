@@ -89,12 +89,27 @@ jobs:
           OTAFILE=$(find ota -type f | head -1)
           unzip -q "$OTAFILE" -d ota_extracted
 
-      - name: Wypakuj AP z artefaktu
+      - name: Wypakuj AP z artefaktu (obsługa tar.md5)
         run: |
           mkdir -p base_extracted
-          # Kopiujemy lz4 oraz gotowe pliki img, jeśli istnieją w zipie
-          find base_fw -name "*.lz4" -exec cp {} base_extracted/ \;
-          find base_fw -name "*.img" -exec cp {} base_extracted/ \;
+          # Szukamy pliku .tar.md5 (typowe dla firmware Samsung)
+          TARFILE=$(find base_fw -name "*.tar.md5" | head -1)
+          if [ -n "$TARFILE" ]; then
+            echo "Znaleziono AP jako tar.md5: $TARFILE"
+            head -c -33 "$TARFILE" | tar -x -C base_extracted/
+          else
+            # Jeśli nie ma tar.md5, może być zwykły .tar
+            TARFILE=$(find base_fw -name "*.tar" | head -1)
+            if [ -n "$TARFILE" ]; then
+              echo "Znaleziono AP jako .tar: $TARFILE"
+              tar -x -f "$TARFILE" -C base_extracted/
+            fi
+          fi
+
+          # Kopiujemy wszystkie .lz4 i .img (jeśli jakieś są) do głównego folderu
+          find base_extracted -name "*.lz4" -exec cp {} base_extracted/ \; 2>/dev/null || true
+          find base_extracted -name "*.img" -exec cp {} base_extracted/ \; 2>/dev/null || true
+
           echo "=== Zawartość folderu bazowego po ekstrakcji ==="
           ls -lh base_extracted/
 
