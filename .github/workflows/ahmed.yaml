@@ -17,7 +17,7 @@ jobs:
           ARTIFACT_ID=7709183127
 
           curl -L \
-            -H "Authorization: Bearer $GH_PAT" \
+            -H "Authorization: Bearer ${GH_PAT}" \
             -H "Accept: application/vnd.github+json" \
             -o ota.zip \
             "https://api.github.com/repos/adamwasowicz9-yansk/johnas/actions/artifacts/${ARTIFACT_ID}/zip"
@@ -25,58 +25,55 @@ jobs:
           file ota.zip
           ls -lh ota.zip
 
-      - name: Extract artifact
+      - name: Extract OTA artifact
         run: |
-          mkdir artifact
-          unzip ota.zip -d artifact
+          set -eux
 
-          echo "=== ARTIFACT CONTENT ==="
-          find artifact -type f | sort
+          mkdir ota_artifact
+          unzip ota.zip -d ota_artifact
 
-      - name: Find OTA ZIP
+          echo "=== artifact content ==="
+          find ota_artifact -type f
+
+      - name: Inspect OTA package
         run: |
-          echo "=== ZIP FILES ==="
-          find artifact -iname "*.zip"
+          set -eux
 
-      - name: Inspect OTA
-        run: |
-          OTA=$(find artifact -iname "*.zip" | head -n1)
+          OTA=$(find ota_artifact -iname "*.zip" | head -n1)
 
-          echo "OTA=$OTA"
+          echo "OTA FILE:"
+          echo "$OTA"
 
-          echo "=== ZIP LIST ==="
-          unzip -l "$OTA" | tee ota_contents.txt
+          unzip -l "$OTA" | tee ota_filelist.txt
 
           echo
-          echo "=== PATCH FILES ==="
-          unzip -l "$OTA" | grep '\.p$' || true
+          echo "=== metadata ==="
+          unzip -p "$OTA" META-INF/com/android/metadata \
+            | tee metadata.txt || true
 
           echo
-          echo "=== TRANSFER LISTS ==="
-          unzip -l "$OTA" | grep 'transfer.list' || true
-
-          echo
-          echo "=== NEW.DAT FILES ==="
-          unzip -l "$OTA" | grep '\.new\.dat' || true
-
-          echo
-          echo "=== PATCH.DAT FILES ==="
-          unzip -l "$OTA" | grep '\.patch\.dat' || true
-
-      - name: Extract updater-script
-        run: |
-          OTA=$(find artifact -iname "*.zip" | head -n1)
-
+          echo "=== updater-script first 500 lines ==="
           unzip -p "$OTA" META-INF/com/google/android/updater-script \
-            > updater-script.txt || true
+            | head -500 \
+            | tee updater_script.txt || true
 
-          echo "=== FIRST 300 LINES ==="
-          head -300 updater-script.txt || true
+          echo
+          echo "=== patch files ==="
+          unzip -l "$OTA" | egrep '\.p$|\.patch\.dat$' \
+            | tee patches.txt || true
 
-      - name: Upload results
+          echo
+          echo "=== transfer lists ==="
+          unzip -l "$OTA" | grep transfer.list \
+            | tee transfer_lists.txt || true
+
+      - name: Upload report
         uses: actions/upload-artifact@v4
         with:
           name: ota-inspection
           path: |
-            ota_contents.txt
-            updater-script.txt
+            ota_filelist.txt
+            metadata.txt
+            updater_script.txt
+            patches.txt
+            transfer_lists.txt
