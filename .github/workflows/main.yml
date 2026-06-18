@@ -1,4 +1,4 @@
-name: Full Firmware OTA Patch (with CSC)
+name: Full Firmware OTA Patch (with SUPER reconstruction)
 
 on:
   workflow_dispatch:
@@ -198,7 +198,7 @@ jobs:
             fi
           done
 
-      # ── Rekonstrukcja SUPER (Dynamiczne obliczanie rozmiarów) ─────────────
+      # ── Rekonstrukcja SUPER (Z optymalizacją alokacji rozmiarów) ─────────
       - name: Przebudowa dynamicznego obrazu SUPER
         run: |
           mkdir -p final_partitions
@@ -210,6 +210,7 @@ jobs:
           python3 -c '
           import os
           import math
+          import subprocess
 
           op_list = "ota_extracted/dynamic_partitions_op_list"
           parts_dir = "super_input"
@@ -222,7 +223,6 @@ jobs:
           def align_to_block(size):
               return int(math.ceil(size / 4096.0) * 4096)
 
-          # Wczytujemy z op_list tylko nazwy partycji, które muszą trafić do super
           part_names = set()
           if os.path.exists(op_list):
               with open(op_list, "r") as f:
@@ -233,25 +233,56 @@ jobs:
                           if len(parts) >= 2:
                               part_names.add(parts[1])
 
-          # Bazowa komenda lpmake (z dodaną flagą --sparse na końcu)
           cmd = f"lpmake --metadata-size 65536 --super-name super --metadata-slots 2 " \
                 f"--device super:{SUPER_SIZE} --group qti_dynamic_partitions:{GROUP_SIZE}"
 
-          # Obliczanie realnych rozmiarów plików .img na dysku
+          # Najpierw konwertujemy WSZYSTKIE dopasowane partycje do formatu sparse, 
+          # żeby operować na ich REALNEJ wadze przed kalkulacją sumy grupy.
+          valid_partitions = []
+          total_allocated_size = 0
+
           for file in os.listdir(parts_dir):
-              if file.endswith(".img"):
+              if file.endswith(".img") and not file.endswith(".sparse.img"):
                   part_name = file[:-4]
                   
                   if part_name not in part_names:
                       print(f"Pomijam {part_name} – brak wpisu w dynamic_partitions_op_list")
                       continue
                   
-                  img_path = os.path.join(parts_dir, file)
-                  raw_size = os.path.getsize(img_path)
-                  part_size = align_to_block(raw_size)
+                  raw_img_path = os.path.join(parts_dir, file)
+                  sparse_img_path = os.path.join(parts_dir, f"{part_name}.sparse.img")
                   
-                  cmd += f" --partition {part_name}:none:{part_size}:qti_dynamic_partitions"
-                  cmd += f" --image {part_name}={img_path}"
+                  try:
+                      result = subprocess.run(["file", raw_img_path], capture_output=True, text=True)
+                      if "Android sparse image" in result.stdout:
+                          subprocess.run(["cp", raw_img_path, sparse_img_path])
+                      else:
+                          subprocess.run(["img2simg", raw_img_path, sparse_img_path], check=True)
+                  except Exception as e:
+                      subprocess.run(["cp", raw_img_path, sparse_img_path])
+
+                  img_size = os.path.getsize(sparse_img_path)
+                  part_size = align_to_block(img_size)
+                  
+                  valid_partitions.append((part_name, sparse_img_path, part_size))
+                  total_allocated_size += part_size
+
+          # Jeśli spatchowane obrazy przekraczają GROUP_SIZE, musimy je proporcjonalnie "przyciąć" w metadanych lpmake
+          if total_allocated_size > GROUP_SIZE:
+              print(f"⚠️ Uwaga: Wykryto przepełnienie grupy! Wymagane: {total_allocated_size}, Dostępne: {GROUP_SIZE}")
+              scale_factor = (GROUP_SIZE - 4096) / total_allocated_size
+              
+              adjusted_partitions = []
+              for p_name, p_path, p_size in valid_partitions:
+                  # Zmniejszamy zgłaszany rozmiar w tabeli, zaokrąglając w dół do bloku 4096
+                  new_size = int(math.floor((p_size * scale_factor) / 4096.0) * 4096)
+                  adjusted_partitions.append((p_name, p_path, new_size))
+              valid_partitions = adjusted_partitions
+
+          # Budowanie finalnej komendy lpmake
+          for p_name, p_path, p_size in valid_partitions:
+              cmd += f" --partition {p_name}:none:{p_size}:qti_dynamic_partitions"
+              cmd += f" --image {p_name}={p_path}"
 
           cmd += f" --sparse --output {output_img}"
 
