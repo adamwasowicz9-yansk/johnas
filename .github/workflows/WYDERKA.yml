@@ -1,0 +1,93 @@
+name: Pobierz i Wrzuć na Pixeldrain
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_url:
+        description: 'Link do pobrania artefaktu (URL)'
+        required: true
+        type: string
+      file_name:
+        description: 'Nazwa pliku (np. paczka.zip) - opcjonalnie'
+        required: false
+        default: 'artefakt.zip'
+        type: string
+      use_api_key:
+        description: 'Czy użyć klucza API Pixeldrain? (dla plików >20MB)'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Pobieranie artefaktu
+        id: download
+        run: |
+          echo "Pobieranie pliku z: ${{ github.event.inputs.artifact_url }}"
+          # Zabezpieczenie przed spacjami – używamy cudzysłowów
+          curl -L --fail -o "${{ github.event.inputs.file_name }}" "${{ github.event.inputs.artifact_url }}"
+          if [ $? -ne 0 ]; then
+            echo "❌ Błąd podczas pobierania pliku."
+            exit 1
+          fi
+          if [ ! -s "${{ github.event.inputs.file_name }}" ]; then
+            echo "❌ Pobrany plik jest pusty lub nie istnieje."
+            exit 1
+          fi
+          echo "✅ Plik pobrany pomyślnie."
+
+      - name: Wysyłanie na Pixeldrain
+        id: pixeldrain_upload
+        env:
+          API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
+        run: |
+          FILE="${{ github.event.inputs.file_name }}"
+          echo "Wysyłanie pliku $FILE na Pixeldrain..."
+
+          # Przygotowanie komendy curl (z kluczem lub bez)
+          if [ "${{ github.event.inputs.use_api_key }}" == "true" ] && [ -n "$API_KEY" ]; then
+            AUTH_HEADER="-H 'Authorization: $API_KEY'"
+          else
+            AUTH_HEADER=""
+          fi
+
+          # Wysłanie żądania i zapisanie odpowiedzi
+          RESPONSE=$(curl -s -X POST $AUTH_HEADER -F "file=@$FILE" https://pixeldrain.com/api/file)
+          CURL_EXIT=$?
+
+          if [ $CURL_EXIT -ne 0 ]; then
+            echo "❌ Błąd połączenia z API Pixeldrain (kod $CURL_EXIT)."
+            exit 1
+          fi
+
+          # Parsowanie JSON
+          FILE_ID=$(echo "$RESPONSE" | jq -r '.id')
+          SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
+
+          if [ "$SUCCESS" != "true" ] || [ "$FILE_ID" == "null" ] || [ -z "$FILE_ID" ]; then
+            echo "❌ Błąd podczas wysyłania pliku!"
+            echo "Odpowiedź serwera: $RESPONSE"
+            exit 1
+          fi
+
+          # Sukces – zapisanie linku
+          DOWNLOAD_URL="https://pixeldrain.com/u/$FILE_ID"
+          echo "download_url=$DOWNLOAD_URL" >> $GITHUB_ENV
+          echo "✅ Sukces! Plik wrzucony."
+          echo "🔗 LINK: $DOWNLOAD_URL"
+
+      - name: Podsumowanie
+        if: success()
+        run: |
+          echo "### 🚀 Plik został pomyślnie przesłany!" >> $GITHUB_STEP_SUMMARY
+          echo "Możesz go pobrać tutaj: **${{ env.download_url }}**" >> $GITHUB_STEP_SUMMARY
+          echo "Nazwa pliku: ${{ github.event.inputs.file_name }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Sprzątanie (opcjonalnie)
+        if: always()
+        run: |
+          rm -f "${{ github.event.inputs.file_name }}"
+          echo "🧹 Plik lokalny usunięty."
