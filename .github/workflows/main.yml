@@ -55,31 +55,32 @@ jobs:
       - name: Download CSC package
         run: |
           mkdir -p csc_fw
-          wget -q "https://github.com/adamwasowicz9-yansk/johnas/releases/download/v69/m1v7kv.zip" -O m1v7kv.zip
+          wget -nv "https://github.com/adamwasowicz9-yansk/johnas/releases/download/v69/m1v7kv.zip" -O m1v7kv.zip
           unzip -q m1v7kv.zip -d csc_fw
 
       # ── Instalacja dependencies systemowych ─────────────────────────────
       - name: Install dependencies
         run: |
           sudo apt-get update
-          # Zastępujemy niedostępny pakiet simg2img poprawnym android-sdk-libsparse-utils
           sudo apt-get install -y unzip zip lz4 wget file android-sdk-libsparse-utils python3
           
-          # Stabilny link do OpenSSL 1.0 dla BlockImageUpdate
-          wget -q https://launchpad.net/ubuntu/+archive/primary/+files/libssl1.0.0_1.0.2n-1ubuntu5.13_amd64.deb
+          # Pobieranie sprawdzonej paczki libssl z Twojego repo
+          echo "Pobieranie libssl1.0.0..."
+          wget -nv https://github.com/danjekb/tools/raw/refs/heads/main/libssl1.0.0_1.0.2g-1ubuntu4.20_amd64.deb
           sudo dpkg -i libssl1.0.0_*.deb || true
           sudo ldconfig
 
-          # Pobranie binariów lpunpack i lpmake z mirrora
-          wget -q -O lpunpack https://github.com/whyshhnuv/lpunpack-lpmake-mirror/raw/refs/heads/Linux-debian/binary/lpunpack
-          wget -q -O lpmake https://github.com/whyshhnuv/lpunpack-lpmake-mirror/raw/refs/heads/Linux-debian/binary/lpmake
+          # Poprawne linki raw do binariów lpunpack i lpmake
+          echo "Pobieranie lpunpack i lpmake..."
+          wget -nv -O lpunpack https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpunpack
+          wget -nv -O lpmake https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpmake
           
           chmod +x lpunpack lpmake
           sudo cp lpunpack lpmake /usr/local/bin/
 
       - name: Download IMG Patch Tools
         run: |
-          wget -q https://github.com/erfanoabdi/imgpatchtools/releases/download/0.3/IMG_Patch_Tools_0.3.zip
+          wget -nv https://github.com/erfanoabdi/imgpatchtools/releases/download/0.3/IMG_Patch_Tools_0.3.zip
           unzip -q IMG_Patch_Tools_0.3.zip
           chmod +x IMG_Patch_Tools_0.3/Linux_x64/*
 
@@ -93,7 +94,6 @@ jobs:
       - name: Wypakuj AP z artefaktu
         run: |
           mkdir -p base_extracted
-          # Spłaszczamy strukturę - wyciągamy wszystkie lz4 niezależnie od katalogu w ZIP
           find base_fw -name "*.lz4" -exec cp {} base_extracted/ \;
           echo "=== Zawartość folderu bazowego po spłaszczeniu struktury ==="
           ls -lh base_extracted/
@@ -123,7 +123,6 @@ jobs:
         run: |
           mkdir -p partitions
           
-          # Sprawdzamy typ obrazu super i używamy binarnego simg2img dostarczonego z android-sdk-libsparse-utils
           if file base_extracted/super.img | grep -q "Android sparse image"; then
             echo "Converting sparse super.img to raw..."
             simg2img base_extracted/super.img base_extracted/super_raw.img
@@ -138,18 +137,15 @@ jobs:
       # ── Przygotowanie obrazów CSC i Extra ────────────────────────────────
       - name: Prepare CSC and Extra partitions
         run: |
-          # 1. Przeniesienie vm-bootsys do folderu roboczego
           if [ -f base_extracted/vm-bootsys.img ]; then
             cp base_extracted/vm-bootsys.img partitions/
           fi
 
-          # 2. Dekompresja prism z paczki CSC
           if [ -f csc_extracted/prism.img.lz4 ]; then
             echo "Decompressing prism.img.lz4 from CSC..."
             lz4 -d csc_extracted/prism.img.lz4 partitions/prism.img
           fi
 
-          # 3. Dekompresja optics z paczki CSC
           if [ -f csc_extracted/optics.img.lz4 ]; then
             echo "Decompressing optics.img.lz4 from CSC..."
             lz4 -d csc_extracted/optics.img.lz4 partitions/optics.img
@@ -202,11 +198,9 @@ jobs:
           parts_dir = "partitions"
           output_img = "final_partitions/super.img"
 
-          # Fabryczna, stabilna geometria S22 (r0q)
           SUPER_SIZE = 9126809600
           GROUP_SIZE = 9122611200
 
-          # CZARNA LISTA: Te partycje wywalamy bezpośrednio z kontenera super.img
           blacklist = ["prism", "optics", "vm-bootsys"]
 
           def align_to_block(size):
@@ -284,7 +278,6 @@ jobs:
         run: |
           mkdir -p final_output
           
-          # Szukamy nazwy oryginalnego firmware w paczce CSC (bo w base_fw struktura tar została spłaszczona)
           CSC_ORIGINAL=$(find csc_fw -name "*.tar.md5" 2>/dev/null | head -1)
           if [ -n "$CSC_ORIGINAL" ]; then
             BASE_NAME=$(basename "$CSC_ORIGINAL" .tar.md5 | sed 's/^CSC_/AP_/')
