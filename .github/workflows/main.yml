@@ -62,6 +62,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
+          # Zastępujemy niedostępny pakiet simg2img poprawnym android-sdk-libsparse-utils
           sudo apt-get install -y unzip zip lz4 wget file android-sdk-libsparse-utils python3
           
           # Stabilny link do OpenSSL 1.0 dla BlockImageUpdate
@@ -92,8 +93,9 @@ jobs:
       - name: Wypakuj AP z artefaktu
         run: |
           mkdir -p base_extracted
-          cp -r base_fw/* base_extracted/ || true
-          echo "=== Zawartość folderu bazowego po wypakowaniu ZIP ==="
+          # Spłaszczamy strukturę - wyciągamy wszystkie lz4 niezależnie od katalogu w ZIP
+          find base_fw -name "*.lz4" -exec cp {} base_extracted/ \;
+          echo "=== Zawartość folderu bazowego po spłaszczeniu struktury ==="
           ls -lh base_extracted/
 
       - name: Extract CSC
@@ -121,6 +123,7 @@ jobs:
         run: |
           mkdir -p partitions
           
+          # Sprawdzamy typ obrazu super i używamy binarnego simg2img dostarczonego z android-sdk-libsparse-utils
           if file base_extracted/super.img | grep -q "Android sparse image"; then
             echo "Converting sparse super.img to raw..."
             simg2img base_extracted/super.img base_extracted/super_raw.img
@@ -135,7 +138,7 @@ jobs:
       # ── Przygotowanie obrazów CSC i Extra ────────────────────────────────
       - name: Prepare CSC and Extra partitions
         run: |
-          # 1. Przeniesienie vm-bootsys (odkodowanego z bazy w kroku lz4) do folderu roboczego
+          # 1. Przeniesienie vm-bootsys do folderu roboczego
           if [ -f base_extracted/vm-bootsys.img ]; then
             cp base_extracted/vm-bootsys.img partitions/
           fi
@@ -227,7 +230,6 @@ jobs:
               if file.endswith(".img"):
                   part_name = file[:-4]
                   
-                  # Odrzucamy śmieci z czarnej listy
                   if part_name in blacklist:
                       print(f"Skipping blacklisted partition from super: {part_name}")
                       continue
@@ -260,7 +262,6 @@ jobs:
       # ── Kopiowanie statycznych obrazów i CSC (Na zewnątrz super) ─────────
       - name: Skopiuj obrazy statyczne spoza super
         run: |
-          # Lista wszystkich obrazów, które mają znaleźć się w końcowym tarze pod Odina
           for img in boot.img dtbo.img vbmeta.img vbmeta_system.img init_boot.img vendor_boot.img vm-bootsys.img prism.img optics.img; do
             OTA_IMG="ota_extracted/$img"
             PART_IMG="partitions/$img"
@@ -283,7 +284,14 @@ jobs:
         run: |
           mkdir -p final_output
           
-          BASE_NAME=$(basename "$(find base_fw -name "*.tar.md5" 2>/dev/null | head -1)" .tar.md5 2>/dev/null || echo "AP_Patched_Firmware")
+          # Szukamy nazwy oryginalnego firmware w paczce CSC (bo w base_fw struktura tar została spłaszczona)
+          CSC_ORIGINAL=$(find csc_fw -name "*.tar.md5" 2>/dev/null | head -1)
+          if [ -n "$CSC_ORIGINAL" ]; then
+            BASE_NAME=$(basename "$CSC_ORIGINAL" .tar.md5 | sed 's/^CSC_/AP_/')
+          else
+            BASE_NAME="AP_Patched_Firmware"
+          fi
+          
           OUTPUT="${BASE_NAME}_patched.tar"
           
           echo "Pakowanie obrazów do: $OUTPUT"
