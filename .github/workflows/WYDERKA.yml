@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       artifact_url:
-        description: 'Link do pobrania artefaktu (URL)'
+        description: 'Link do artefaktu (np. https://github.com/owner/repo/actions/runs/123/artifacts/456)'
         required: true
         type: string
       file_name:
-        description: 'Nazwa pliku (np. paczka.zip) - opcjonalnie'
+        description: 'Nazwa pliku (np. paczka.zip)'
         required: false
         default: 'artefakt.zip'
         type: string
@@ -23,20 +23,44 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Pobieranie artefaktu
+      - name: Pobieranie artefaktu przez API GitHub
         id: download
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # lub własny PAT
         run: |
-          echo "Pobieranie pliku z: ${{ github.event.inputs.artifact_url }}"
-          # Zabezpieczenie przed spacjami – używamy cudzysłowów
-          curl -L --fail -o "${{ github.event.inputs.file_name }}" "${{ github.event.inputs.artifact_url }}"
-          if [ $? -ne 0 ]; then
-            echo "❌ Błąd podczas pobierania pliku."
+          ARTIFACT_URL="${{ github.event.inputs.artifact_url }}"
+          FILE_NAME="${{ github.event.inputs.file_name }}"
+          
+          echo "Pobieranie artefaktu z: $ARTIFACT_URL"
+
+          # Wyciągnięcie owner/repo i artifact_id z URL-a
+          # Format: https://github.com/owner/repo/actions/runs/RUN_ID/artifacts/ARTIFACT_ID
+          ARTIFACT_ID=$(echo "$ARTIFACT_URL" | grep -oP '(?<=/artifacts/)\d+')
+          REPO=$(echo "$ARTIFACT_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/.*|\1|')
+
+          if [ -z "$ARTIFACT_ID" ] || [ -z "$REPO" ]; then
+            echo "❌ Nie udało się wyodrębnić ID artefaktu lub repozytorium z podanego URL."
             exit 1
           fi
-          if [ ! -s "${{ github.event.inputs.file_name }}" ]; then
-            echo "❌ Pobrany plik jest pusty lub nie istnieje."
+
+          # Pobieranie przez API
+          RESPONSE=$(curl -s -L \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$REPO/actions/artifacts/$ARTIFACT_ID/zip" \
+            -o "$FILE_NAME" -w "%{http_code}")
+
+          if [ "$RESPONSE" -ne 200 ]; then
+            echo "❌ Błąd pobierania (kod HTTP: $RESPONSE). Sprawdź token i uprawnienia."
             exit 1
           fi
+
+          if [ ! -s "$FILE_NAME" ]; then
+            echo "❌ Pobrany plik jest pusty."
+            exit 1
+          fi
+
           echo "✅ Plik pobrany pomyślnie."
 
       - name: Wysyłanie na Pixeldrain
@@ -47,47 +71,38 @@ jobs:
           FILE="${{ github.event.inputs.file_name }}"
           echo "Wysyłanie pliku $FILE na Pixeldrain..."
 
-          # Przygotowanie komendy curl (z kluczem lub bez)
+          # Przygotowanie autoryzacji (jeśli użyto klucza)
           if [ "${{ github.event.inputs.use_api_key }}" == "true" ] && [ -n "$API_KEY" ]; then
             AUTH_HEADER="-H 'Authorization: $API_KEY'"
           else
             AUTH_HEADER=""
           fi
 
-          # Wysłanie żądania i zapisanie odpowiedzi
           RESPONSE=$(curl -s -X POST $AUTH_HEADER -F "file=@$FILE" https://pixeldrain.com/api/file)
-          CURL_EXIT=$?
-
-          if [ $CURL_EXIT -ne 0 ]; then
-            echo "❌ Błąd połączenia z API Pixeldrain (kod $CURL_EXIT)."
+          if [ $? -ne 0 ]; then
+            echo "❌ Błąd połączenia z Pixeldrain."
             exit 1
           fi
 
-          # Parsowanie JSON
           FILE_ID=$(echo "$RESPONSE" | jq -r '.id')
           SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
 
-          if [ "$SUCCESS" != "true" ] || [ "$FILE_ID" == "null" ] || [ -z "$FILE_ID" ]; then
-            echo "❌ Błąd podczas wysyłania pliku!"
-            echo "Odpowiedź serwera: $RESPONSE"
+          if [ "$SUCCESS" != "true" ] || [ -z "$FILE_ID" ] || [ "$FILE_ID" == "null" ]; then
+            echo "❌ Błąd wysyłki: $RESPONSE"
             exit 1
           fi
 
-          # Sukces – zapisanie linku
           DOWNLOAD_URL="https://pixeldrain.com/u/$FILE_ID"
           echo "download_url=$DOWNLOAD_URL" >> $GITHUB_ENV
-          echo "✅ Sukces! Plik wrzucony."
-          echo "🔗 LINK: $DOWNLOAD_URL"
+          echo "✅ Sukces! Link: $DOWNLOAD_URL"
 
       - name: Podsumowanie
         if: success()
         run: |
-          echo "### 🚀 Plik został pomyślnie przesłany!" >> $GITHUB_STEP_SUMMARY
-          echo "Możesz go pobrać tutaj: **${{ env.download_url }}**" >> $GITHUB_STEP_SUMMARY
-          echo "Nazwa pliku: ${{ github.event.inputs.file_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "### 🚀 Plik przesłany na Pixeldrain" >> $GITHUB_STEP_SUMMARY
+          echo "**Link:** ${{ env.download_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Nazwa pliku:** ${{ github.event.inputs.file_name }}" >> $GITHUB_STEP_SUMMARY
 
-      - name: Sprzątanie (opcjonalnie)
+      - name: Sprzątanie
         if: always()
-        run: |
-          rm -f "${{ github.event.inputs.file_name }}"
-          echo "🧹 Plik lokalny usunięty."
+        run: rm -f "${{ github.event.inputs.file_name }}"
