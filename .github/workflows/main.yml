@@ -58,11 +58,10 @@ jobs:
           wget -q "https://github.com/adamwasowicz9-yansk/johnas/releases/download/v69/m1v7kv.zip" -O m1v7kv.zip
           unzip -q m1v7kv.zip -d csc_fw
 
-      # ── Instalacja zależności systemowych ───────────────────────────────
+      # ── Instalacja dependencies systemowych ─────────────────────────────
       - name: Install dependencies
         run: |
           sudo apt-get update
-          # android-sdk-libsparse-utils zastępuje problematyczny pakiet simg2img
           sudo apt-get install -y unzip zip lz4 wget file android-sdk-libsparse-utils python3
           
           # Stabilny link do OpenSSL 1.0 dla BlockImageUpdate
@@ -90,13 +89,12 @@ jobs:
           OTAFILE=$(find ota -type f | head -1)
           unzip -q "$OTAFILE" -d ota_extracted
 
-      - name: Wypakuj AP tar
+      - name: Wypakuj AP z artefaktu
         run: |
           mkdir -p base_extracted
-          cd base_extracted
-          APFILE=$(find ../base_fw -name "*.tar.md5" | head -1)
-          head -c -33 "$APFILE" | tar xf -
-          ls -lh
+          cp -r base_fw/* base_extracted/ || true
+          echo "=== Zawartość folderu bazowego po wypakowaniu ZIP ==="
+          ls -lh base_extracted/
 
       - name: Extract CSC
         run: |
@@ -105,7 +103,7 @@ jobs:
           CSCFILE=$(find ../csc_fw -name "*.tar.md5" | head -1)
           head -c -33 "$CSCFILE" | tar xf -
 
-      # ── Twoja autorska pętla dekompresji lz4 dla bazy AP ─────────────────
+      # ── Dekompresja lz4 dla bazy AP ─────────────────────────────────────
       - name: Zdekompresuj obrazy lz4
         run: |
           cd base_extracted
@@ -123,7 +121,6 @@ jobs:
         run: |
           mkdir -p partitions
           
-          # Plik super.img jest już czystym obrazem dzięki pętli lz4
           if file base_extracted/super.img | grep -q "Android sparse image"; then
             echo "Converting sparse super.img to raw..."
             simg2img base_extracted/super.img base_extracted/super_raw.img
@@ -138,7 +135,7 @@ jobs:
       # ── Przygotowanie obrazów CSC i Extra ────────────────────────────────
       - name: Prepare CSC and Extra partitions
         run: |
-          # 1. Przeniesienie vm-bootsys (odkodowanego z bazy w kroku lz4)
+          # 1. Przeniesienie vm-bootsys (odkodowanego z bazy w kroku lz4) do folderu roboczego
           if [ -f base_extracted/vm-bootsys.img ]; then
             cp base_extracted/vm-bootsys.img partitions/
           fi
@@ -188,7 +185,7 @@ jobs:
           echo "===== Patched Files Size ====="
           ls -lh partitions/
 
-      # ── Przebudowa kontenera SUPER (Z wyrównaniem do bloków 4096) ────────
+      # ── Rekonstrukcja SUPER (Bez śmieci z czarnej listy, oryginalna geometria) ───
       - name: Przebudowa dynamicznego obrazu SUPER
         run: |
           mkdir -p final_partitions
@@ -202,11 +199,13 @@ jobs:
           parts_dir = "partitions"
           output_img = "final_partitions/super.img"
 
-          # Właściwa geometria dla S22 (r0q) podzielna przez 4096
+          # Fabryczna, stabilna geometria S22 (r0q)
           SUPER_SIZE = 9126809600
           GROUP_SIZE = 9122611200
 
-          # Matematyczne wyrównanie rozmiaru w górę do bloku 4096
+          # CZARNA LISTA: Te partycje wywalamy bezpośrednio z kontenera super.img
+          blacklist = ["prism", "optics", "vm-bootsys"]
+
           def align_to_block(size):
               return int(math.ceil(size / 4096.0) * 4096)
 
@@ -228,6 +227,11 @@ jobs:
               if file.endswith(".img"):
                   part_name = file[:-4]
                   
+                  # Odrzucamy śmieci z czarnej listy
+                  if part_name in blacklist:
+                      print(f"Skipping blacklisted partition from super: {part_name}")
+                      continue
+                  
                   raw_size = sizes.get(part_name, os.path.getsize(os.path.join(parts_dir, file)))
                   part_size = align_to_block(raw_size)
                   
@@ -247,24 +251,30 @@ jobs:
           bash lpmake_cmd.sh
           
           if [ -f "final_partitions/super.img" ]; then
-            echo "✓ super.img został pomyślnie i perfekcyjnie odbudowany!"
+            echo "✓ super.img został pomyślnie i perfekcyjnie odbudowany bez śmieci!"
             ls -lh final_partitions/super.img
           else
             echo "BŁĄD: Wbudowany generator lpmake nie utworzył pliku super.img!" && exit 1
           fi
 
-      # ── Kopiowanie statycznych obrazów pod finalny tar ──────────────────
+      # ── Kopiowanie statycznych obrazów i CSC (Na zewnątrz super) ─────────
       - name: Skopiuj obrazy statyczne spoza super
         run: |
-          for img in boot.img dtbo.img vbmeta.img vbmeta_system.img init_boot.img vendor_boot.img vm-bootsys.img; do
+          # Lista wszystkich obrazów, które mają znaleźć się w końcowym tarze pod Odina
+          for img in boot.img dtbo.img vbmeta.img vbmeta_system.img init_boot.img vendor_boot.img vm-bootsys.img prism.img optics.img; do
             OTA_IMG="ota_extracted/$img"
+            PART_IMG="partitions/$img"
             BASE_IMG="base_extracted/$img"
+            
             if [ -f "$OTA_IMG" ]; then
               cp "$OTA_IMG" "final_partitions/$img"
-              echo "✓ $img (zastąpiono z OTA)"
+              echo "✓ $img (zastąpiono nowym z OTA)"
+            elif [ -f "$PART_IMG" ]; then
+              cp "$PART_IMG" "final_partitions/$img"
+              echo "✓ $img (skopiowano spatchowany/CSC z folderu roboczego partitions)"
             elif [ -f "$BASE_IMG" ]; then
               cp "$BASE_IMG" "final_partitions/$img"
-              echo "  $img (zachowano z odkodowanej bazy)"
+              echo "  $img (zachowano oryginalny z bazy)"
             fi
           done
 
