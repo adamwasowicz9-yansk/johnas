@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y unzip zip lz4 wget file android-sdk-libsparse-utils python3 jq
+          sudo apt-get install -y unzip zip lz4 wget file android-sdk-libsparse-utils python3 jq rsync
           wget -nv https://github.com/danjekb/tools/raw/refs/heads/main/libssl1.0.0_1.0.2g-1ubuntu4.20_amd64.deb
           sudo dpkg -i libssl1.0.0_*.deb || true
           sudo ldconfig
@@ -67,7 +67,7 @@ jobs:
           OTAFILE=$(find ota -type f | head -1)
           unzip -q "$OTAFILE" -d ota_extracted
 
-      # ── Ekstrakcja AP ───────────────────────────────────────────────────
+      # ── Ekstrakcja AP (tar.md5) ───────────────────────────────────────
       - name: Extract AP (tar.md5)
         run: |
           mkdir -p base_extracted
@@ -145,8 +145,8 @@ jobs:
             rm -f "${BASE}.bak"
           done
 
-      # ── Fix nesting: przenieś /system/system/* do /system/ ─────────────
-      - name: Fix nesting (move /system/system to /system)
+      # ── Fix nesting + konwersja do f2fs ───────────────────────────────
+      - name: Fix nesting and convert to f2fs
         run: |
           sudo apt-get update
           sudo apt-get install -y f2fs-tools linux-modules-extra-$(uname -r) || true
@@ -154,39 +154,30 @@ jobs:
 
           mkdir -p mnt_system mnt_new
 
-          # Zamontuj obecny system.img
-          sudo mount -o loop partitions/system.img mnt_system
+          # Montujemy obecny system (read-only)
+          sudo mount -o loop,ro partitions/system.img mnt_system
 
-          # Sprawdź, czy istnieje podkatalog system/
-          if [ -d "mnt_system/system" ]; then
-            echo "Znaleziono zagnieżdżony katalog system/, przenoszę zawartość do głównego system/"
-            # Utwórz katalog tymczasowy
-            mkdir -p /tmp/system_root
-            # Kopiujemy wszystko z mnt_system/system do tymczasowego miejsca
-            sudo cp -a mnt_system/system/* /tmp/system_root/
-            # Czyścimy stary system (oprócz samego system/)
-            sudo rm -rf mnt_system/*
-            # Przywracamy zawartość
-            sudo cp -a /tmp/system_root/* mnt_system/
-            # Usuwamy tymczasowy katalog
-            sudo rm -rf /tmp/system_root
-          else
-            echo "Brak zagnieżdżenia, nic nie robię."
-          fi
-
-          sudo umount mnt_system
-
-          # Teraz przekonwertuj system na f2fs + powiększ (zachowujemy fix)
           OLD_SIZE=$(stat -c%s partitions/system.img)
           NEW_SIZE=$((OLD_SIZE + 200*1024*1024))
+          COUNT=$((NEW_SIZE / 1024 / 1024 + 2))
 
-          dd if=/dev/zero of=partitions/system_new.img bs=1M count=$((NEW_SIZE / 1024 / 1024 + 2))
+          # Tworzymy nowy obraz f2fs
+          dd if=/dev/zero of=partitions/system_new.img bs=1M count=$COUNT
           mkfs.f2fs -f partitions/system_new.img
 
           sudo mount -o loop partitions/system_new.img mnt_new
-          sudo mount -o loop partitions/system.img mnt_system
 
-          sudo cp -a mnt_system/* mnt_new/
+          # Kopiujemy zawartość z naprawą zagnieżdżenia
+          if [ -d "mnt_system/system" ]; then
+            echo "Znaleziono zagnieżdżenie – kopiuję zawartość system/ do głównego katalogu"
+            # Kopiuj wszystko oprócz katalogu system/
+            sudo rsync -a --exclude='system' mnt_system/ mnt_new/
+            # Kopiuj zawartość system/ do głównego
+            sudo rsync -a mnt_system/system/ mnt_new/
+          else
+            echo "Brak zagnieżdżenia – kopiuję wszystko"
+            sudo rsync -a mnt_system/ mnt_new/
+          fi
 
           sudo umount mnt_new
           sudo umount mnt_system
