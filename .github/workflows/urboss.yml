@@ -148,18 +148,13 @@ jobs:
       - name: Merge system_ext into system and fix nesting
         run: |
           sudo apt-get update
-          sudo apt-get install -y f2fs-tools libguestfs-tools
+          sudo apt-get install -y f2fs-tools linux-modules-extra-$(uname -r)
+          sudo modprobe f2fs
 
           mkdir -p mnt_system mnt_system_ext mnt_new
 
-          # Try native mount first (works if the kernel actually has f2fs.ko)
-          if ! sudo mount -o loop partitions/system.img mnt_system 2>/dev/null; then
-            echo "native mount failed, falling back to guestmount"
-            sudo guestmount -a partitions/system.img -m /dev/sda --ro mnt_system
-          fi
-          if ! sudo mount -o loop partitions/system_ext.img mnt_system_ext 2>/dev/null; then
-            sudo guestmount -a partitions/system_ext.img -m /dev/sda --ro mnt_system_ext
-          fi
+          sudo mount -o loop,ro partitions/system.img mnt_system
+          sudo mount -o loop,ro partitions/system_ext.img mnt_system_ext
 
           OLD_SIZE=$(stat -c%s partitions/system.img)
           NEW_SIZE=$((OLD_SIZE + 200*1024*1024))
@@ -167,20 +162,19 @@ jobs:
           dd if=/dev/zero of=partitions/system_merged.img bs=1M count=$((NEW_SIZE / 1024 / 1024 + 2))
           mkfs.f2fs -f partitions/system_merged.img
 
-          if ! sudo mount -o loop partitions/system_merged.img mnt_new 2>/dev/null; then
-            sudo guestmount -a partitions/system_merged.img -m /dev/sda --rw mnt_new
-          fi
+          sudo mount -o loop partitions/system_merged.img mnt_new
 
           sudo cp -a mnt_system/* mnt_new/
           sudo mkdir -p mnt_new/system_ext
           sudo cp -a mnt_system_ext/* mnt_new/system_ext/
 
-          sudo umount mnt_new 2>/dev/null || sudo guestunmount mnt_new
-          sudo umount mnt_system 2>/dev/null || sudo guestunmount mnt_system
-          sudo umount mnt_system_ext 2>/dev/null || sudo guestunmount mnt_system_ext
+          sudo umount mnt_new
+          sudo umount mnt_system
+          sudo umount mnt_system_ext
 
           mv partitions/system_merged.img partitions/system.img
           rm -f partitions/system_ext.img
+
       # ── Prepare artifacts ──────────────────────────────────────────────
       - name: Prepare artifacts
         run: |
