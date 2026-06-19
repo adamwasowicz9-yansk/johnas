@@ -1,4 +1,4 @@
-name: Kutasaqa
+name: fjuciba
 
 on:
   workflow_dispatch:
@@ -65,7 +65,7 @@ jobs:
 
           echo "Pobieranie lpunpack i lpmake..."
           wget -nv -O lpunpack https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpunpack
-          wget -nv -O lpmake https://raw.githubusercontent.com/whyshhnuv/lpmake-mirror/Linux-debian/binary/lpmake
+          wget -nv -O lpmake https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpmake
 
           chmod +x lpunpack lpmake
           sudo cp lpunpack lpmake /usr/local/bin/
@@ -346,7 +346,6 @@ jobs:
           fi
 
       # ── Kopiowanie statycznych obrazów (Na zewnątrz super) ───────────────
-       Tar.md5 pod Odina zawiera teraz zaktualizowane statyczne obrazy z OTA
       - name: Skopiuj obrazy statyczne spoza super
         run: |
           for img in boot.img dtbo.img vbmeta.img vbmeta_system.img init_boot.img vendor_boot.img vm-bootsys.img; do
