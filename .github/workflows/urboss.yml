@@ -115,10 +115,10 @@ jobs:
             lpunpack base_extracted/super_raw.img partitions/
           fi
 
-      # ── Patch ──────────────────────────────────────────────────────────
-      - name: Patch system, system_ext, product
+      # ── Patch (tylko system i product) ─────────────────────────────────
+      - name: Patch system and product
         run: |
-          TARGETS="system system_ext product"
+          TARGETS="system product"
           OP_LIST="ota_extracted/dynamic_partitions_op_list"
 
           for part in $TARGETS; do
@@ -145,37 +145,52 @@ jobs:
             rm -f "${BASE}.bak"
           done
 
-      - name: Merge system_ext into system and fix nesting
+      # ── Fix nesting: przenieś /system/system/* do /system/ ─────────────
+      - name: Fix nesting (move /system/system to /system)
         run: |
           sudo apt-get update
-          sudo apt-get install -y f2fs-tools linux-modules-extra-$(uname -r)
-          sudo modprobe f2fs
+          sudo apt-get install -y f2fs-tools linux-modules-extra-$(uname -r) || true
+          sudo modprobe f2fs 2>/dev/null || true
 
-          mkdir -p mnt_system mnt_system_ext mnt_new
+          mkdir -p mnt_system mnt_new
 
-          sudo mount -o loop,ro partitions/system.img mnt_system
-          sudo mount -o loop,ro partitions/system_ext.img mnt_system_ext
+          # Zamontuj obecny system.img
+          sudo mount -o loop partitions/system.img mnt_system
 
+          # Sprawdź, czy istnieje podkatalog system/
+          if [ -d "mnt_system/system" ]; then
+            echo "Znaleziono zagnieżdżony katalog system/, przenoszę zawartość do głównego system/"
+            # Kopiujemy wszystko z mnt_system/system do tymczasowego miejsca
+            sudo cp -a mnt_system/system/* /tmp/system_root/
+            # Czyścimy stary system (oprócz samego system/)
+            sudo rm -rf mnt_system/*
+            # Przywracamy zawartość
+            sudo cp -a /tmp/system_root/* mnt_system/
+          else
+            echo "Brak zagnieżdżenia, nic nie robię."
+          fi
+
+          sudo umount mnt_system
+
+          # Teraz przekonwertuj system na f2fs + powiększ (zachowujemy fix)
           OLD_SIZE=$(stat -c%s partitions/system.img)
           NEW_SIZE=$((OLD_SIZE + 200*1024*1024))
 
-          dd if=/dev/zero of=partitions/system_merged.img bs=1M count=$((NEW_SIZE / 1024 / 1024 + 2))
-          mkfs.f2fs -f partitions/system_merged.img
+          dd if=/dev/zero of=partitions/system_new.img bs=1M count=$((NEW_SIZE / 1024 / 1024 + 2))
+          mkfs.f2fs -f partitions/system_new.img
 
-          sudo mount -o loop partitions/system_merged.img mnt_new
+          sudo mount -o loop partitions/system_new.img mnt_new
+          sudo mount -o loop partitions/system.img mnt_system
 
           sudo cp -a mnt_system/* mnt_new/
-          sudo mkdir -p mnt_new/system_ext
-          sudo cp -a mnt_system_ext/* mnt_new/system_ext/
 
           sudo umount mnt_new
           sudo umount mnt_system
-          sudo umount mnt_system_ext
 
-          mv partitions/system_merged.img partitions/system.img
-          rm -f partitions/system_ext.img
+          mv partitions/system_new.img partitions/system.img
+          rm -rf mnt_system mnt_new /tmp/system_root
 
-      # ── Prepare artifacts ──────────────────────────────────────────────
+      # ── Prepare artifacts (tylko system i product) ────────────────────
       - name: Prepare artifacts
         run: |
           mkdir -p final_imgs
