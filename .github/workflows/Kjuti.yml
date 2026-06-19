@@ -1,16 +1,13 @@
-name: Test product Patch from Super
+name: fiucina
 
 on:
   workflow_dispatch:
 
 jobs:
-  patch:
+  test-product:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-
-      # ── Zwolnienie miejsca na dysku ─────────────────────────────────────
       - name: Free disk space
         run: |
           echo "Before:"
@@ -27,211 +24,212 @@ jobs:
           echo "After:"
           df -h /
 
-      # ── Pobieranie artefaktów ──────────────────────────────────────────
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip lz4 wget file android-sdk-libsparse-utils
+
+          wget -nv https://github.com/danjekb/tools/raw/refs/heads/main/libssl1.0.0_1.0.2g-1ubuntu4.20_amd64.deb
+          sudo dpkg -i libssl1.0.0_*.deb || true
+          sudo ldconfig
+
+          wget -nv -O lpunpack https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpunpack
+          chmod +x lpunpack
+          sudo cp lpunpack /usr/local/bin/
+
+          wget -nv https://github.com/erfanoabdi/imgpatchtools/releases/download/0.3/IMG_Patch_Tools_0.3.zip
+          unzip -q IMG_Patch_Tools_0.3.zip
+          chmod +x IMG_Patch_Tools_0.3/Linux_x64/*
+
       - name: Download AP artifact
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           mkdir -p base_fw
-          echo "Pobieranie AP z artefaktu ID 7736838535..."
-          HTTP_CODE=$(curl -L -w "%{http_code}" \
+          curl -L \
             -H "Authorization: Bearer $GH_PAT" \
             -H "Accept: application/vnd.github+json" \
             -o ap.zip \
-            "https://api.github.com/repos/durenstudnio/johnas/actions/artifacts/7736838535/zip")
-          echo "Kod HTTP: $HTTP_CODE"
-          if [ "$HTTP_CODE" -ne 200 ]; then
-            echo "BŁĄD: Artefakt AP nie istnieje (HTTP $HTTP_CODE)"
-            exit 1
-          fi
-          if [ ! -s ap.zip ]; then
-            echo "BŁĄD: Pobrany plik ap.zip jest pusty!"
-            exit 1
-          fi
-          echo "Rozpakowuję ap.zip do base_fw..."
+            "https://api.github.com/repos/durenstudnio/johnas/actions/artifacts/7736838535/zip"
           unzip -q ap.zip -d base_fw
-          echo "Zawartość base_fw:"
-          ls -lh base_fw/
+          rm -f ap.zip
+          df -h /
 
       - name: Download OTA artifact
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           mkdir -p ota
-          echo "Pobieranie OTA z artefaktu ID 7709183127..."
-          HTTP_CODE=$(curl -L -w "%{http_code}" \
+          curl -L \
             -H "Authorization: Bearer $GH_PAT" \
             -H "Accept: application/vnd.github+json" \
             -o ota.zip \
-            "https://api.github.com/repos/durenstudnio/johnas/actions/artifacts/7709183127/zip")
-          echo "Kod HTTP: $HTTP_CODE"
-          if [ "$HTTP_CODE" -ne 200 ]; then
-            echo "BŁĄD: Artefakt OTA nie istnieje (HTTP $HTTP_CODE)"
-            exit 1
-          fi
-          if [ ! -s ota.zip ]; then
-            echo "BŁĄD: Pobrany plik ota.zip jest pusty!"
-            exit 1
-          fi
-          echo "Rozpakowuję ota.zip do ota..."
+            "https://api.github.com/repos/durenstudnio/johnas/actions/artifacts/7709183127/zip"
           unzip -q ota.zip -d ota
-          echo "Zawartość ota:"
-          ls -lh ota/
+          rm -f ota.zip
+          df -h /
 
-      # ── Instalacja zależności ───────────────────────────────────────────
-      - name: Install dependencies
+      - name: Extract OTA product files only
         run: |
-          sudo apt-get update
-          sudo apt-get install -y unzip zip lz4 wget file android-sdk-libsparse-utils python3 brotli
-
-          echo "Pobieranie libssl1.0.0..."
-          wget -nv https://github.com/danjekb/tools/raw/refs/heads/main/libssl1.0.0_1.0.2g-1ubuntu4.20_amd64.deb
-          sudo dpkg -i libssl1.0.0_*.deb || true
-          sudo ldconfig
-
-          echo "Pobieranie lpunpack..."
-          wget -nv -O lpunpack https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpunpack
-          chmod +x lpunpack
-          sudo cp lpunpack /usr/local/bin/
-
-      - name: Download IMG Patch Tools
-        run: |
-          wget -nv https://github.com/erfanoabdi/imgpatchtools/releases/download/0.3/IMG_Patch_Tools_0.3.zip
-          unzip -q IMG_Patch_Tools_0.3.zip
-          chmod +x IMG_Patch_Tools_0.3/Linux_x64/*
-
-      # ── Ekstrakcja OTA ──────────────────────────────────────────────────
-      - name: Extract OTA
-        run: |
-          mkdir -p ota_extracted
+          mkdir ota_extracted
           OTAFILE=$(find ota -type f | head -1)
-          if [ -z "$OTAFILE" ]; then
-            echo "BŁĄD: Nie znaleziono pliku OTA w folderze ota!"
-            exit 1
-          fi
-          echo "Plik OTA: $OTAFILE"
+
+          # Extract just the files we need for this test (saves time/space)
+          unzip -l "$OTAFILE" | grep -i "^.*product" || true
+          unzip -q -o "$OTAFILE" -d ota_extracted "product.transfer.list" "product.new.dat*" "product.patch.dat" || \
           unzip -q "$OTAFILE" -d ota_extracted
-          if [ $? -ne 0 ]; then
-            echo "BŁĄD: Nie udało się rozpakować OTA!"
-            exit 1
-          fi
-          echo "Zawartość ota_extracted:"
-          ls -lh ota_extracted/
 
-          # Dekompresja .new.dat.br jeśli istnieją
-          for f in ota_extracted/*.new.dat.br; do
-            if [ -f "$f" ]; then
-              echo "Dekompresuję brotli: $f"
-              brotli -d "$f"
-            fi
-          done
-          echo "Zawartość po dekompresji brotli:"
-          ls -lh ota_extracted/
+          echo "=== product files from OTA ==="
+          ls -lh ota_extracted/ | grep product
 
-      # ── Wyciągnięcie product.img z super.img ──────────────────────────
-      - name: Extract AP and Unpack product
+      - name: Wypakuj AP (z obsługą zagnieżdżonych zipów)
         run: |
           mkdir -p base_extracted
-          APFILE=$(find base_fw -name "*.tar.md5" -o -name "*.tar" | head -1)
-          if [ -z "$APFILE" ]; then
-            echo "BŁĄD: Nie znaleziono pliku AP (.tar.md5 / .tar) w base_fw!"
+
+          # FIX: poprzednio rozpakowywaliśmy CAŁY zagnieżdżony zip (BL+AP+CP+CSC+HOME_CSC),
+          # co zajmowało ~10GB miejsca na dysku dla testu, który potrzebuje tylko AP.
+          # Teraz wyciągamy z niego TYLKO plik AP_*.
+          for i in 1 2 3; do
+            FOUND_TAR=$(find base_fw -name "*.tar.md5" -o -name "*.tar" 2>/dev/null | head -1)
+            [ -n "$FOUND_TAR" ] && break
+            NESTED_ZIP=$(find base_fw -name "*.zip" | head -1)
+            [ -z "$NESTED_ZIP" ] && break
+            echo "Rozpakowuję TYLKO plik AP_* z zagnieżdżonego zipa: $NESTED_ZIP"
+            unzip -l "$NESTED_ZIP" | grep -i "^.*AP_" || true
+            unzip -q -o "$NESTED_ZIP" -d base_fw "AP_*" || unzip -q -o "$NESTED_ZIP" -d base_fw
+            rm -f "$NESTED_ZIP"
+            df -h /
+          done
+
+          TARFILE=$(find base_fw -name "*.tar.md5" | head -1)
+          if [ -z "$TARFILE" ]; then
+            TARFILE=$(find base_fw -name "*.tar" | head -1)
+          fi
+
+          if [ -z "$TARFILE" ]; then
+            echo "BŁĄD: Nie znaleziono .tar.md5 ani .tar w AP!"
+            find base_fw -maxdepth 3
             exit 1
           fi
-          echo "Plik AP: $APFILE"
 
-          # Rozpakuj TAR (z obsługą tar.md5)
-          if [[ "$APFILE" == *.tar.md5 ]]; then
-            echo "Wykryto tar.md5 – usuwanie sumy (33 bajty)"
-            head -c -33 "$APFILE" | tar -xf - -C base_extracted/ super.img.lz4 2>/dev/null || \
-            head -c -33 "$APFILE" | tar -xf - -C base_extracted/ super.img 2>/dev/null
+          echo "Znaleziono AP: $TARFILE"
+
+          # Wyciągamy TYLKO super.img / super.img.lz4 z tar (tar przeskakuje resztę bez zapisu na dysk)
+          ENTRY=$(head -c -33 "$TARFILE" | tar -t 2>/dev/null | grep -E "^super\.img" | head -1)
+          if [ -n "$ENTRY" ]; then
+            echo "Wyciągam tylko: $ENTRY"
+            head -c -33 "$TARFILE" | tar -x -C base_extracted/ "$ENTRY"
           else
-            echo "Wykryto zwykły .tar"
-            tar -xf "$APFILE" -C base_extracted/ super.img.lz4 2>/dev/null || \
-            tar -xf "$APFILE" -C base_extracted/ super.img 2>/dev/null
+            echo "Nie znalazłem super.img w liście tar, rozpakowuję całość..."
+            head -c -33 "$TARFILE" | tar -x -C base_extracted/
           fi
 
-          cd base_extracted
+          # FIX: usuwamy AP_xxx.tar.md5 (~8,5GB) — już niepotrzebny, mamy super.img.lz4
+          rm -f "$TARFILE"
 
-          # Dekompresja lz4
+          echo "=== Po ekstrakcji super.img ==="
+          ls -lh base_extracted/
+          echo "=== Pozostałość w base_fw (powinno być ~puste) ==="
+          du -sh base_fw 2>/dev/null || true
+          df -h /
+
+      - name: Zdekompresuj super.img.lz4 jeśli potrzeba
+        run: |
+          cd base_extracted
           if [ -f super.img.lz4 ]; then
-            echo "Dekompresja super.img.lz4..."
             lz4 -d super.img.lz4 super.img
             rm super.img.lz4
           fi
+          ls -lh
+          df -h /
 
-          # Konwersja sparse → raw
-          if [ -f super.img ] && file super.img | grep -q "Android sparse image"; then
-            echo "Konwersja sparse → raw..."
-            simg2img super.img super_raw.img
-            rm super.img
-            mv super_raw.img super.img
-          fi
-
-          # Wyciągnięcie tylko product.img
-          echo "Próba wyciągnięcia product.img za pomocą lpunpack --partition..."
-          if lpunpack --partition=product super.img ./ 2>/dev/null; then
-            echo "Sukces: wyciągnięto product.img"
-          else
-            echo "Ostrzeżenie: lpunpack nie obsługuje --partition, wypakowuję wszystko..."
-            lpunpack super.img ./
-            if [ -f product.img ]; then
-              cp product.img ../product.img.bak
-              rm -f *.img
-              mv ../product.img.bak product.img
-            fi
-          fi
-
-          rm -f super.img
-
-          if [ ! -f product.img ]; then
-            echo "BŁĄD: Nie udało się uzyskać product.img!"
-            exit 1
-          fi
-
-          echo "Rozmiar product.img:"
-          ls -lh product.img
-          cd ..
-
-      # ── Patchowanie product.img ──────────────────────────────────────────
-      - name: Patch product image
+      - name: Wyciągnij TYLKO partycję product z super.img
         run: |
-          if [ ! -f ota_extracted/product.transfer.list ]; then
-            echo "BŁĄD: Brak product.transfer.list – OTA nie zawiera łatki dla product."
+          mkdir -p partitions
+
+          SUPER_PATH=$(find base_extracted -name "super.img" | head -1)
+          if [ -z "$SUPER_PATH" ]; then
+            echo "BŁĄD: nie znaleziono super.img!"
             exit 1
           fi
 
-          cp base_extracted/product.img ./product.img
+          if file "$SUPER_PATH" | grep -q "Android sparse image"; then
+            echo "Konwertuję sparse -> raw..."
+            simg2img "$SUPER_PATH" base_extracted/super_raw.img
+            rm -f "$SUPER_PATH"
+            SUPER_PATH=base_extracted/super_raw.img
+          fi
 
-          echo "Uruchamiam BlockImageUpdate dla product..."
-          ./IMG_Patch_Tools_0.3/Linux_x64/BlockImageUpdate \
-            product.img \
+          # lpunpack supports extracting a single partition with -p
+          lpunpack -p product "$SUPER_PATH" partitions/ || lpunpack -p product_a "$SUPER_PATH" partitions/
+
+          # FIX: super.img/super_raw.img (~9GB każdy) już niepotrzebne — usuwamy
+          # natychmiast, zanim zaczniemy patchowanie (które i tak potrzebuje miejsca
+          # na cache/stash).
+          rm -f "$SUPER_PATH"
+
+          echo "=== Wyciągnięte ==="
+          ls -lh partitions/
+          df -h /
+
+          if [ ! -f partitions/product.img ] && [ ! -f partitions/product_a.img ]; then
+            echo "BŁĄD: nie udało się wyciągnąć product z super.img"
+            exit 1
+          fi
+
+          # normalize name to product.img
+          [ -f partitions/product_a.img ] && mv partitions/product_a.img partitions/product.img
+
+      # ── Faktyczny test patchowania, z monitoringiem i timeoutem ─────────
+      - name: Patch product (z monitoringiem zasobów + timeout)
+        run: |
+          cp partitions/product.img partitions/product.img.bak
+
+          echo "=== Stan przed patchowaniem ==="
+          df -h /
+          free -h
+
+          # Monitor w tle: co 30s loguje df/free/czy proces żyje
+          (
+            while true; do
+              sleep 30
+              echo "----- MONITOR $(date -u +%H:%M:%S) -----"
+              df -h / | tail -1
+              free -h | grep Mem
+              if pgrep -f BlockImageUpdate > /dev/null; then
+                echo "BlockImageUpdate: WCIĄŻ DZIAŁA"
+              else
+                echo "BlockImageUpdate: NIE DZIAŁA (zakończony albo jeszcze nie wystartował)"
+              fi
+            done
+          ) &
+          MONITOR_PID=$!
+
+          echo "=== Startuję patchowanie product (limit 20 min) ==="
+          set +e
+          timeout 1200 ./IMG_Patch_Tools_0.3/Linux_x64/BlockImageUpdate \
+            partitions/product.img \
             ota_extracted/product.transfer.list \
             ota_extracted/product.new.dat \
             ota_extracted/product.patch.dat
-
           PATCH_EXIT=$?
-          if [ $PATCH_EXIT -ne 0 ]; then
-            echo "BŁĄD: Patchowanie product.img zakończyło się kodem $PATCH_EXIT"
-            exit $PATCH_EXIT
+          set -e
+
+          kill "$MONITOR_PID" 2>/dev/null || true
+
+          echo ""
+          echo "=== Stan po patchowaniu (exit $PATCH_EXIT) ==="
+          df -h /
+          free -h
+
+          if [ $PATCH_EXIT -eq 124 ]; then
+            echo "❌ TIMEOUT — patchowanie nie zakończyło się w 20 minut. To potwierdza zawieszenie, nie tylko 'wolne' patchowanie."
+          elif [ $PATCH_EXIT -ne 0 ]; then
+            echo "❌ Patchowanie zakończone błędem (exit $PATCH_EXIT) — prawdopodobnie hash mismatch AP/OTA."
+          else
+            echo "✅ Patchowanie product zakończone sukcesem!"
           fi
-          echo "Patchowanie zakończone pomyślnie."
 
-      # ── Weryfikacja ──────────────────────────────────────────────────────
-      - name: Verify result
-        run: |
-          echo "===== FILE ====="
-          file product.img
-          echo
-          echo "===== SHA1 ====="
-          sha1sum product.img
-          echo
-          echo "===== SIZE ====="
-          ls -lh product.img
-
-      # ── Upload artefaktu ─────────────────────────────────────────────────
-      - name: Upload patched image
-        uses: actions/upload-artifact@v4
-        with:
-          name: product-patched
-          path: product.img
-          retention-days: 7
+          echo ""
+          echo "=== Porównanie rozmiarów ==="
+          ls -lh partitions/product.img partitions/product.img.bak
