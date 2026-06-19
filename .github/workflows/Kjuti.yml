@@ -1,4 +1,4 @@
-name: fiucina
+name: test-product-patch
 
 on:
   workflow_dispatch:
@@ -178,7 +178,11 @@ jobs:
           fi
 
           # normalize name to product.img
-          [ -f partitions/product_a.img ] && mv partitions/product_a.img partitions/product.img
+          # FIX: pod `bash -e`, samo "[ -f x ] && cmd" zwraca exit 1 (i ubija krok)
+          # gdy plik nie istnieje — nawet jeśli to oczekiwane i nieszkodliwe.
+          if [ -f partitions/product_a.img ]; then
+            mv partitions/product_a.img partitions/product.img
+          fi
 
       # ── Faktyczny test patchowania, z monitoringiem i timeoutem ─────────
       - name: Patch product (z monitoringiem zasobów + timeout)
