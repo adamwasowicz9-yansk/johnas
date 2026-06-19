@@ -28,15 +28,22 @@ jobs:
       - name: Pobierz artefakt(y) z poprzedniego runa
         env:
           GH_TOKEN: ${{ github.token }}
+          RAW_RUN_ID: ${{ inputs.run_id }}
+          RAW_ARTIFACT_NAME: ${{ inputs.artifact_name }}
         run: |
+          # przycinamy białe znaki (np. wklejona spacja na końcu psuje URL -> 404)
+          RUN_ID="$(echo "$RAW_RUN_ID" | xargs)"
+          ARTIFACT_NAME="$(echo "$RAW_ARTIFACT_NAME" | xargs)"
+          echo "Używam run_id='$RUN_ID' artifact_name='$ARTIFACT_NAME'"
+
           mkdir -p downloaded
-          if [ -n "${{ inputs.artifact_name }}" ]; then
-            gh run download "${{ inputs.run_id }}" \
+          if [ -n "$ARTIFACT_NAME" ]; then
+            gh run download "$RUN_ID" \
               --repo "${{ github.repository }}" \
-              --name "${{ inputs.artifact_name }}" \
+              --name "$ARTIFACT_NAME" \
               --dir downloaded
           else
-            gh run download "${{ inputs.run_id }}" \
+            gh run download "$RUN_ID" \
               --repo "${{ github.repository }}" \
               --dir downloaded
           fi
