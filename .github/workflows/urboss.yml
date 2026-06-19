@@ -149,7 +149,8 @@ jobs:
       - name: Fix nesting and convert to ext4
         run: |
           sudo apt-get update
-          sudo apt-get install -y e2fsprogs
+          sudo apt-get install -y f2fs-tools e2fsprogs
+          sudo modprobe f2fs 2>/dev/null || true
 
           mkdir -p mnt_system mnt_new
 
@@ -157,16 +158,14 @@ jobs:
           sudo mount -o loop,ro partitions/system.img mnt_system
 
           OLD_SIZE=$(stat -c%s partitions/system.img)
-          NEW_SIZE=$((OLD_SIZE + 512*1024*1024))   # +512 MB
+          NEW_SIZE=$((OLD_SIZE + 512*1024*1024))
           COUNT=$((NEW_SIZE / 1024 / 1024 + 2))
 
-          # Tworzymy nowy obraz ext4
           dd if=/dev/zero of=partitions/system_new.img bs=1M count=$COUNT
           sudo mkfs.ext4 -F partitions/system_new.img
 
           sudo mount -o loop partitions/system_new.img mnt_new
 
-          # Kopiujemy zawartość z naprawą zagnieżdżenia
           if [ -d "mnt_system/system" ]; then
             echo "Znaleziono zagnieżdżenie – kopiuję zawartość system/ do głównego katalogu"
             sudo rsync -a --exclude='system' mnt_system/ mnt_new/
