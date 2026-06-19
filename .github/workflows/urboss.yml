@@ -75,18 +75,15 @@ jobs:
           sudo dpkg -i libssl1.0.0_*.deb || true
           sudo ldconfig
 
-          echo "Pobieranie lpunpack i lpmake..."
-          wget -nv -O lpunpack https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpunpack
+          echo "Pobieranie lpmake..."
           wget -nv -O lpmake https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpmake
+          chmod +x lpmake
+          sudo cp lpmake /usr/local/bin/
 
-          chmod +x lpunpack lpmake
-          sudo cp lpunpack lpmake /usr/local/bin/
-
-      - name: Download IMG Patch Tools
-        run: |
-          wget -nv https://github.com/erfanoabdi/imgpatchtools/releases/download/0.3/IMG_Patch_Tools_0.3.zip
-          unzip -q IMG_Patch_Tools_0.3.zip
-          chmod +x IMG_Patch_Tools_0.3/Linux_x64/*
+          echo "Pobieranie lpunpack z repozytorium danjekb/tools..."
+          wget -nv -O lpunpack https://github.com/danjekb/tools/raw/refs/heads/main/super.img-extractor-lpunpack
+          chmod +x lpunpack
+          sudo cp lpunpack /usr/local/bin/
 
       # ── Ekstrakcja paczek ───────────────────────────────────────────────
       - name: Extract OTA
@@ -99,11 +96,6 @@ jobs:
         run: |
           mkdir -p base_extracted
 
-          # FIX: GitHub Actions artifacts czasem zawierają cały spakowany
-          # firmware Samsunga (np. cały zip z BL+AP+CP+CSC+HOME_CSC) zamiast
-          # samego pliku .tar.md5. Rozpakowujemy zagnieżdżone zipy, aż
-          # znajdziemy plik .tar.md5 / .tar (max 3 poziomy, żeby uniknąć
-          # nieskończonej pętli przy uszkodzonych archiwach).
           for i in 1 2 3; do
             FOUND_TAR=$(find base_fw -name "*.tar.md5" -o -name "*.tar" 2>/dev/null | head -1)
             if [ -n "$FOUND_TAR" ]; then
@@ -131,7 +123,7 @@ jobs:
           fi
 
           if [ -z "$TARFILE" ]; then
-            echo "BŁĄD: Nie znaleziono pliku .tar.md5 ani .tar w artefakcie AP po rozpakowaniu zagnieżdżonych zipów!"
+            echo "BŁĄD: Nie znaleziono pliku .tar.md5 ani .tar w artefakcie AP!"
             echo "=== Zawartość base_fw (do diagnozy) ==="
             find base_fw -maxdepth 3
             exit 1
@@ -147,8 +139,6 @@ jobs:
         run: |
           mkdir -p csc_extracted
 
-          # FIX: jak w kroku AP — rozpakuj zagnieżdżone zipy, jeśli artefakt
-          # CSC nie zawiera .tar.md5 bezpośrednio.
           for i in 1 2 3; do
             FOUND_TAR=$(find csc_fw -name "*.tar.md5" 2>/dev/null | head -1)
             if [ -n "$FOUND_TAR" ]; then
@@ -165,7 +155,7 @@ jobs:
 
           CSCFILE=$(find csc_fw -name "*.tar.md5" | head -1)
           if [ -z "$CSCFILE" ]; then
-            echo "BŁĄD: Nie znaleziono pliku CSC .tar.md5 po rozpakowaniu zagnieżdżonych zipów!"
+            echo "BŁĄD: Nie znaleziono pliku CSC .tar.md5!"
             echo "=== Zawartość csc_fw (do diagnozy) ==="
             find csc_fw -maxdepth 3
             exit 1
@@ -188,31 +178,22 @@ jobs:
           echo "=== Rozpakowane obrazy bazy ==="
           ls -lh *.img 2>/dev/null || echo "Brak .img"
 
-      # ── Rozbijanie kontenera super.img na podobrazy ──────────────────────
-      - name: Unpack super.img to get sub-images
+      # ── Rozpakowanie super.img do partitions ────────────────────────────
+      - name: Unpack super.img to partitions
         run: |
           mkdir -p partitions
-
           SUPER_PATH=$(find base_extracted -name "super.img" | head -1)
-
           if [ -z "$SUPER_PATH" ]; then
             echo "BŁĄD: Nie znaleziono pliku super.img w base_extracted!"
             ls -R base_extracted
             exit 1
           fi
-
-          if file "$SUPER_PATH" | grep -q "Android sparse image"; then
-            echo "Converting sparse super.img to raw..."
-            simg2img "$SUPER_PATH" base_extracted/super_raw.img
-            lpunpack base_extracted/super_raw.img partitions/
-          else
-            lpunpack "$SUPER_PATH" partitions/
-          fi
-
-          echo "===== Extracted partitions from super ====="
+          echo "Używam lpunpack bezpośrednio na super.img (nawet jeśli sparse)..."
+          lpunpack "$SUPER_PATH" partitions/
+          echo "===== Wyodrębnione partycje z super ====="
           ls -lh partitions/
 
-      # ── Przygotowanie obrazów CSC i Extra (Z dala od folderu 'partitions') ──
+      # ── Przygotowanie obrazów CSC i Extra ──────────────────────────────
       - name: Prepare CSC and Extra partitions
         run: |
           mkdir -p extra_partitions
@@ -234,11 +215,7 @@ jobs:
           echo "===== Extra/CSC Partitions ready ====="
           ls -lh extra_partitions/
 
-      # ── Łatanie partycji dynamicznych przez BlockImageUpdate ─────────────
-      # FIX: Patch failures (block hash mismatches from AP/OTA version mismatch)
-      # no longer abort the workflow. A failed partition keeps its base image,
-      # which is then used as-is in the super rebuild. Patched partitions take
-      # priority; base fallback is clearly logged for diagnosis.
+      # ── Łatanie partycji dynamicznych ──────────────────────────────────
       - name: Patch ALL dynamic partitions
         run: |
           echo "===== STARTING AUTOMATIC LOOP PATCHING ====="
@@ -249,7 +226,7 @@ jobs:
             echo "=== dynamic_partitions_op_list (resize entries) ==="
             grep -E "^resize " "$OP_LIST" || echo "(brak wpisów resize)"
           else
-            echo "⚠️  Brak dynamic_partitions_op_list w OTA — resize zostanie pominięty dla wszystkich partycji."
+            echo "⚠️  Brak dynamic_partitions_op_list w OTA — resize zostanie pominięty."
           fi
 
           for list in ota_extracted/*.transfer.list; do
@@ -258,22 +235,15 @@ jobs:
 
             echo "Processing partition: $part_name"
 
-            # FIX: prism/optics (i podobne) nie są częścią super.img, więc nie
-            # trafiają do partitions/ — ich obraz bazowy leży w extra_partitions/
-            # (rozpakowany z CSC). Sprawdzamy oba miejsca.
             BASE_IMG=""
             if [ -f "partitions/${part_name}.img" ]; then
               BASE_IMG="partitions/${part_name}.img"
             elif [ -f "extra_partitions/${part_name}.img" ]; then
               BASE_IMG="extra_partitions/${part_name}.img"
-              echo "  (obraz bazowy znaleziony w extra_partitions/, nie w partitions/)"
+              echo "  (obraz bazowy znaleziony w extra_partitions/)"
             fi
 
             if [ -n "$BASE_IMG" ]; then
-              # ── KROK OBOWIĄZKOWY: resize do rozmiaru z dynamic_partitions_op_list ──
-              # Bez tego BlockImageUpdate może się zawiesić w ciszy (bez błędu),
-              # zamiast szybko zwrócić kod błędu — potwierdzone empirycznie na
-              # partycji product.
               if [ -f "$OP_LIST" ]; then
                 TARGET_SIZE=$(grep -E "^resize ${part_name}(_a)? " "$OP_LIST" | awk '{print $3}' | tail -1)
                 if [ -n "$TARGET_SIZE" ]; then
@@ -285,7 +255,6 @@ jobs:
                 fi
               fi
 
-              # Work on a copy so the base image is preserved on failure
               cp "$BASE_IMG" "${BASE_IMG}.bak"
 
               ./IMG_Patch_Tools_0.3/Linux_x64/BlockImageUpdate \
@@ -296,7 +265,7 @@ jobs:
               PATCH_EXIT=$?
 
               if [ $PATCH_EXIT -ne 0 ]; then
-                echo "⚠️  WARNING: Patching $part_name failed (exit $PATCH_EXIT) — restoring base image as fallback."
+                echo "⚠️  WARNING: Patching $part_name failed (exit $PATCH_EXIT) — restoring base image."
                 mv "${BASE_IMG}.bak" "$BASE_IMG"
                 PATCH_FAILED_PARTS="$PATCH_FAILED_PARTS $part_name"
               else
@@ -311,17 +280,9 @@ jobs:
           if [ -n "$PATCH_FAILED_PARTS" ]; then
             echo ""
             echo "⚠️  Partitions that used base fallback (patch failed):$PATCH_FAILED_PARTS"
-            echo "    This usually means the AP firmware and OTA are from different builds."
-            echo "    The output will be assembled but may not be fully updated for those partitions."
           fi
 
       # ── Rekonstrukcja SUPER ──────────────────────────────────────────────
-      # FIX: The old code scaled down declared partition sizes proportionally
-      # when the total exceeded GROUP_SIZE. This caused lpmake to reject images
-      # because the declared slot was smaller than the actual image file.
-      # The fix: always declare each partition at its REAL image size. If the
-      # true total exceeds GROUP_SIZE the build fails with a clear message
-      # instead of a misleading lpmake exit-73 crash.
       - name: Przebudowa dynamicznego obrazu SUPER
         run: |
           mkdir -p final_partitions
@@ -385,7 +346,6 @@ jobs:
                   print(f"img2simg failed for {part_name} ({e}), copying raw as fallback")
                   subprocess.run(["cp", raw_img_path, sparse_img_path])
 
-              # FIX: use the REAL image size — never declare less than the actual file.
               img_size = os.path.getsize(sparse_img_path)
               part_size = align_to_block(img_size)
 
@@ -399,8 +359,7 @@ jobs:
               print(f"")
               print(f"ERROR: Patched partitions ({total_real_size} bytes) exceed GROUP_SIZE ({GROUP_SIZE} bytes).")
               print(f"       Overflow: {total_real_size - GROUP_SIZE} bytes ({(total_real_size - GROUP_SIZE) / 1024 / 1024:.1f} MB)")
-              print(f"       This means the AP firmware and OTA produce images that cannot fit")
-              print(f"       in this device'\''s super partition. Verify AP and OTA build versions match.")
+              print(f"       Verify AP and OTA build versions match.")
               sys.exit(1)
 
           for p_name, p_path, p_size in valid_partitions:
@@ -427,7 +386,7 @@ jobs:
             exit 1
           fi
 
-      # ── Kopiowanie statycznych obrazów i CSC (Na zewnątrz super) ─────────
+      # ── Kopiowanie statycznych obrazów i CSC ────────────────────────────
       - name: Skopiuj obrazy statyczne spoza super
         run: |
           for img in boot.img dtbo.img vbmeta.img vbmeta_system.img init_boot.img vendor_boot.img vm-bootsys.img prism.img optics.img; do
@@ -484,7 +443,7 @@ jobs:
           ls -lh ./
           cd ..
 
-      # ── Upload do GitHub Artifacts (Zapas) ──────────────────────────────
+      # ── Upload do GitHub Artifacts ──────────────────────────────────────
       - name: Upload AP tar.md5 do Artifacts
         uses: actions/upload-artifact@v4
         with:
