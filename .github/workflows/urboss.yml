@@ -1,4 +1,4 @@
-name: urboss
+name: Yolto
 
 on:
   workflow_dispatch:
@@ -52,18 +52,6 @@ jobs:
             "https://api.github.com/repos/durenstudnio/johnas/actions/artifacts/7709183127/zip"
           unzip -q ota.zip -d ota
 
-      - name: Download CSC package
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-        run: |
-          mkdir -p csc_fw
-          curl -L \
-            -H "Authorization: Bearer $GH_PAT" \
-            -H "Accept: application/vnd.github+json" \
-            -o csc.zip \
-            "https://api.github.com/repos/durenstudnio/johnas/actions/artifacts/7737126908/zip"
-          unzip -q csc.zip -d csc_fw
-
       # ── Instalacja dependencies systemowych ─────────────────────────────
       - name: Install dependencies
         run: |
@@ -75,15 +63,18 @@ jobs:
           sudo dpkg -i libssl1.0.0_*.deb || true
           sudo ldconfig
 
-          echo "Pobieranie lpmake..."
-          wget -nv -O lpmake https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpmake
-          chmod +x lpmake
-          sudo cp lpmake /usr/local/bin/
+          echo "Pobieranie lpunpack i lpmake..."
+          wget -nv -O lpunpack https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpunpack
+          wget -nv -O lpmake https://raw.githubusercontent.com/whyshhnuv/lpmake-mirror/Linux-debian/binary/lpmake
 
-          echo "Pobieranie lpunpack z repozytorium danjekb/tools..."
-          wget -nv -O lpunpack https://github.com/danjekb/tools/raw/refs/heads/main/super.img-extractor-lpunpack
-          chmod +x lpunpack
-          sudo cp lpunpack /usr/local/bin/
+          chmod +x lpunpack lpmake
+          sudo cp lpunpack lpmake /usr/local/bin/
+
+      - name: Download IMG Patch Tools
+        run: |
+          wget -nv https://github.com/erfanoabdi/imgpatchtools/releases/download/0.3/IMG_Patch_Tools_0.3.zip
+          unzip -q IMG_Patch_Tools_0.3.zip
+          chmod +x IMG_Patch_Tools_0.3/Linux_x64/*
 
       # ── Ekstrakcja paczek ───────────────────────────────────────────────
       - name: Extract OTA
@@ -123,7 +114,7 @@ jobs:
           fi
 
           if [ -z "$TARFILE" ]; then
-            echo "BŁĄD: Nie znaleziono pliku .tar.md5 ani .tar w artefakcie AP!"
+            echo "BŁĄD: Nie znaleziono pliku .tar.md5 ani .tar w artefakcie AP po rozpakowaniu zagnieżdżonych zipów!"
             echo "=== Zawartość base_fw (do diagnozy) ==="
             find base_fw -maxdepth 3
             exit 1
@@ -134,36 +125,6 @@ jobs:
 
           echo "=== Zawartość folderu bazowego po ekstrakcji ==="
           ls -lh base_extracted/
-
-      - name: Extract CSC
-        run: |
-          mkdir -p csc_extracted
-
-          for i in 1 2 3; do
-            FOUND_TAR=$(find csc_fw -name "*.tar.md5" 2>/dev/null | head -1)
-            if [ -n "$FOUND_TAR" ]; then
-              break
-            fi
-            NESTED_ZIP=$(find csc_fw -name "*.zip" | head -1)
-            if [ -z "$NESTED_ZIP" ]; then
-              break
-            fi
-            echo "Nie znaleziono tar.md5, rozpakowuję zagnieżdżony zip: $NESTED_ZIP"
-            unzip -q -o "$NESTED_ZIP" -d csc_fw
-            rm -f "$NESTED_ZIP"
-          done
-
-          CSCFILE=$(find csc_fw -name "*.tar.md5" | head -1)
-          if [ -z "$CSCFILE" ]; then
-            echo "BŁĄD: Nie znaleziono pliku CSC .tar.md5!"
-            echo "=== Zawartość csc_fw (do diagnozy) ==="
-            find csc_fw -maxdepth 3
-            exit 1
-          fi
-
-          echo "Znaleziono CSC jako tar.md5: $CSCFILE"
-          cd csc_extracted
-          head -c -33 "../$CSCFILE" | tar xf -
 
       # ── Dekompresja lz4 dla bazy AP ─────────────────────────────────────
       - name: Zdekompresuj obrazy lz4
@@ -178,44 +139,46 @@ jobs:
           echo "=== Rozpakowane obrazy bazy ==="
           ls -lh *.img 2>/dev/null || echo "Brak .img"
 
-      # ── Rozpakowanie super.img do partitions ────────────────────────────
-      - name: Unpack super.img to partitions
+      # ── Rozbijanie kontenera super.img na podobrazy ──────────────────────
+      - name: Unpack super.img to get sub-images
         run: |
           mkdir -p partitions
+
           SUPER_PATH=$(find base_extracted -name "super.img" | head -1)
+
           if [ -z "$SUPER_PATH" ]; then
             echo "BŁĄD: Nie znaleziono pliku super.img w base_extracted!"
             ls -R base_extracted
             exit 1
           fi
-          echo "Używam lpunpack bezpośrednio na super.img (nawet jeśli sparse)..."
-          ./lpunpack "$SUPER_PATH" partitions/
-          echo "===== Wyodrębnione partycje z super ====="
-          ls -lh partitions/
 
-      # ── Przygotowanie obrazów CSC i Extra ──────────────────────────────
-      - name: Prepare CSC and Extra partitions
+          echo "Próbuję lpunpack bezpośrednio na sparse super.img..."
+          if lpunpack "$SUPER_PATH" partitions/; then
+            echo "✓ lpunpack zadziałał bezpośrednio na sparse super.img."
+          else
+            echo "⚠️  lpunpack nie poradził sobie ze sparse super.img — fallback: konwersja do raw."
+            simg2img "$SUPER_PATH" base_extracted/super_raw.img
+            lpunpack base_extracted/super_raw.img partitions/
+            rm -f base_extracted/super_raw.img
+          fi
+
+          rm -f "$SUPER_PATH"
+
+          echo "===== Extracted partitions from super ====="
+          ls -lh partitions/
+          df -h /
+
+      # ── Przygotowanie dodatkowych obrazów ────────────────────────────────
+      - name: Prepare extra partitions
         run: |
           mkdir -p extra_partitions
-
           if [ -f base_extracted/vm-bootsys.img ]; then
             cp base_extracted/vm-bootsys.img extra_partitions/
           fi
-
-          if [ -f csc_extracted/prism.img.lz4 ]; then
-            echo "Decompressing prism.img.lz4 from CSC..."
-            lz4 -d csc_extracted/prism.img.lz4 extra_partitions/prism.img
-          fi
-
-          if [ -f csc_extracted/optics.img.lz4 ]; then
-            echo "Decompressing optics.img.lz4 from CSC..."
-            lz4 -d csc_extracted/optics.img.lz4 extra_partitions/optics.img
-          fi
-
-          echo "===== Extra/CSC Partitions ready ====="
+          echo "===== Extra Partitions ready ====="
           ls -lh extra_partitions/
 
-      # ── Łatanie partycji dynamicznych ──────────────────────────────────
+      # ── Łatanie partycji dynamicznych przez BlockImageUpdate ─────────────
       - name: Patch ALL dynamic partitions
         run: |
           echo "===== STARTING AUTOMATIC LOOP PATCHING ====="
@@ -226,7 +189,7 @@ jobs:
             echo "=== dynamic_partitions_op_list (resize entries) ==="
             grep -E "^resize " "$OP_LIST" || echo "(brak wpisów resize)"
           else
-            echo "⚠️  Brak dynamic_partitions_op_list w OTA — resize zostanie pominięty."
+            echo "⚠️  Brak dynamic_partitions_op_list w OTA — resize zostanie pominięty dla wszystkich partycji."
           fi
 
           for list in ota_extracted/*.transfer.list; do
@@ -240,7 +203,7 @@ jobs:
               BASE_IMG="partitions/${part_name}.img"
             elif [ -f "extra_partitions/${part_name}.img" ]; then
               BASE_IMG="extra_partitions/${part_name}.img"
-              echo "  (obraz bazowy znaleziony w extra_partitions/)"
+              echo "  (obraz bazowy znaleziony w extra_partitions/, nie w partitions/)"
             fi
 
             if [ -n "$BASE_IMG" ]; then
@@ -262,10 +225,10 @@ jobs:
                 "ota_extracted/${part_name}.transfer.list" \
                 "ota_extracted/${part_name}.new.dat" \
                 "ota_extracted/${part_name}.patch.dat"
+              
               PATCH_EXIT=$?
-
               if [ $PATCH_EXIT -ne 0 ]; then
-                echo "⚠️  WARNING: Patching $part_name failed (exit $PATCH_EXIT) — restoring base image."
+                echo "⚠️  WARNING: Patching $part_name failed (exit $PATCH_EXIT) — restoring base image as fallback."
                 mv "${BASE_IMG}.bak" "$BASE_IMG"
                 PATCH_FAILED_PARTS="$PATCH_FAILED_PARTS $part_name"
               else
@@ -273,7 +236,7 @@ jobs:
                 rm -f "${BASE_IMG}.bak"
               fi
             else
-              echo "WARNING: Base image for $part_name not found in partitions or extra_partitions, skipping!"
+              echo "WARNING: Base image for $part_name not found, skipping!"
             fi
           done
 
@@ -328,7 +291,6 @@ jobs:
                   continue
 
               part_name = file[:-4]
-
               if part_name not in part_names:
                   print(f"Pomijam {part_name} – brak wpisu w dynamic_partitions_op_list")
                   continue
@@ -356,10 +318,7 @@ jobs:
           print(f"GROUP_SIZE limit:              {GROUP_SIZE} bytes")
 
           if total_real_size > GROUP_SIZE:
-              print(f"")
-              print(f"ERROR: Patched partitions ({total_real_size} bytes) exceed GROUP_SIZE ({GROUP_SIZE} bytes).")
-              print(f"       Overflow: {total_real_size - GROUP_SIZE} bytes ({(total_real_size - GROUP_SIZE) / 1024 / 1024:.1f} MB)")
-              print(f"       Verify AP and OTA build versions match.")
+              print(f"\nERROR: Patched partitions ({total_real_size} bytes) exceed GROUP_SIZE ({GROUP_SIZE} bytes).")
               sys.exit(1)
 
           for p_name, p_path, p_size in valid_partitions:
@@ -386,10 +345,11 @@ jobs:
             exit 1
           fi
 
-      # ── Kopiowanie statycznych obrazów i CSC ────────────────────────────
+      # ── Kopiowanie statycznych obrazów (Na zewnątrz super) ───────────────
+       Tar.md5 pod Odina zawiera teraz zaktualizowane statyczne obrazy z OTA
       - name: Skopiuj obrazy statyczne spoza super
         run: |
-          for img in boot.img dtbo.img vbmeta.img vbmeta_system.img init_boot.img vendor_boot.img vm-bootsys.img prism.img optics.img; do
+          for img in boot.img dtbo.img vbmeta.img vbmeta_system.img init_boot.img vendor_boot.img vm-bootsys.img; do
             OTA_IMG="ota_extracted/$img"
             EXTRA_IMG="extra_partitions/$img"
             BASE_IMG="base_extracted/$img"
@@ -399,7 +359,7 @@ jobs:
               echo "✓ $img (zastąpiono nowym z OTA)"
             elif [ -f "$EXTRA_IMG" ]; then
               cp "$EXTRA_IMG" "final_partitions/$img"
-              echo "✓ $img (skopiowano z folderu extra/CSC)"
+              echo "✓ $img (skopiowano z folderu extra)"
             elif [ -f "$BASE_IMG" ]; then
               cp "$BASE_IMG" "final_partitions/$img"
               echo "  $img (zachowano oryginalny z bazy)"
@@ -410,14 +370,7 @@ jobs:
       - name: Spakuj AP tar.md5
         run: |
           mkdir -p final_output
-
-          CSC_ORIGINAL=$(find csc_fw -name "*.tar.md5" 2>/dev/null | head -1)
-          if [ -n "$CSC_ORIGINAL" ]; then
-            BASE_NAME=$(basename "$CSC_ORIGINAL" .tar.md5 | sed 's/^CSC_/AP_/')
-          else
-            BASE_NAME="AP_Patched_Firmware"
-          fi
-
+          BASE_NAME="AP_Patched_Firmware"
           OUTPUT_TAR="${BASE_NAME}_patched.tar"
 
           echo "=== Wolne miejsce przed pakowaniem ==="
@@ -432,7 +385,7 @@ jobs:
           df -h /
 
           echo "Czyszczenie pozostałości w celu odzyskania miejsca..."
-          rm -rf final_partitions base_fw ota ota_extracted base_extracted csc_fw csc_extracted extra_partitions partitions super_input
+          rm -rf final_partitions base_fw ota ota_extracted base_extracted extra_partitions partitions super_input
 
           echo "Generowanie sumy kontrolnej MD5 dla Odina..."
           cd final_output
@@ -443,7 +396,7 @@ jobs:
           ls -lh ./
           cd ..
 
-      # ── Upload do GitHub Artifacts ──────────────────────────────────────
+      # ── Upload do GitHub Artifacts (Zapas) ──────────────────────────────
       - name: Upload AP tar.md5 do Artifacts
         uses: actions/upload-artifact@v4
         with:
