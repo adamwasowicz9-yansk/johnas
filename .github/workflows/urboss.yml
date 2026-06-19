@@ -189,7 +189,7 @@ jobs:
             exit 1
           fi
           echo "Używam lpunpack bezpośrednio na super.img (nawet jeśli sparse)..."
-          lpunpack "$SUPER_PATH" partitions/
+          ./lpunpack "$SUPER_PATH" partitions/
           echo "===== Wyodrębnione partycje z super ====="
           ls -lh partitions/
 
