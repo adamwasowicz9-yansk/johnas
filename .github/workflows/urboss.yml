@@ -201,6 +201,24 @@ jobs:
             exit 1
           fi
 
+          # FIX: ustalamy PRAWDZIWY rozmiar super partycji TEGO urządzenia
+          # (z nagłówka sparse albo rozmiaru pliku raw) — zamiast zgadywać
+          # SUPER_SIZE/GROUP_SIZE na sztywno w kolejnym kroku. Zapisujemy do
+          # pliku, żeby przetrwało nawet jeśli super.img zostanie później
+          # usunięty/skonwertowane.
+          FILE_INFO=$(file "$SUPER_PATH")
+          echo "Info o super.img: $FILE_INFO"
+
+          if echo "$FILE_INFO" | grep -q "Android sparse image"; then
+            TOTAL_BLOCKS=$(echo "$FILE_INFO" | grep -oE "Total of [0-9]+" | grep -oE "[0-9]+")
+            BLOCK_SIZE=$(echo "$FILE_INFO" | grep -oE "[0-9]+-byte" | grep -oE "[0-9]+")
+            REAL_SUPER_SIZE=$((TOTAL_BLOCKS * BLOCK_SIZE))
+          else
+            REAL_SUPER_SIZE=$(stat -c%s "$SUPER_PATH")
+          fi
+          echo "Prawdziwy rozmiar super.img (z tego urządzenia): $REAL_SUPER_SIZE bajtów"
+          echo "$REAL_SUPER_SIZE" > base_extracted/super_real_size.txt
+
           # FIX (z tutoriala): NIE konwertujemy sparse -> raw. lpunpack ma
           # czytać super.img bezpośrednio jako sparse. Konwersja do raw jest
           # tylko fallbackiem, jeśli ten konkretny binarny lpunpack faktycznie
@@ -373,21 +391,47 @@ jobs:
           parts_dir = "super_input"
           output_img = "final_partitions/super.img"
 
-          SUPER_SIZE = 9126809600
-          GROUP_SIZE = 9122611200
+          # FIX: zamiast zahardkodowanej (i błędnej — zbyt małej o >1GB)
+          # wartości, czytamy PRAWDZIWY rozmiar super.img tego urządzenia,
+          # zapisany w kroku "Unpack super.img" z nagłówka sparse.
+          REAL_SIZE_FILE = "base_extracted/super_real_size.txt"
+          if os.path.exists(REAL_SIZE_FILE):
+              with open(REAL_SIZE_FILE) as f:
+                  REAL_SUPER_SIZE = int(f.read().strip())
+              SUPER_SIZE = REAL_SUPER_SIZE
+              # mały margines bezpieczeństwa na metadata (2 sloty * 65536B = 131072B)
+              GROUP_SIZE = REAL_SUPER_SIZE - 1048576
+              print(f"Użyto wykrytego rozmiaru super.img tego urządzenia: SUPER_SIZE={SUPER_SIZE}, GROUP_SIZE={GROUP_SIZE}")
+          else:
+              print("⚠️  Brak super_real_size.txt — używam wartości domyślnych (mogą być nieprawidłowe dla tego urządzenia!)")
+              SUPER_SIZE = 9126809600
+              GROUP_SIZE = 9122611200
 
           def align_to_block(size):
               return int(math.ceil(size / 4096.0) * 4096)
 
-          part_names = set()
+          # FIX: poprzednia logika pomijała partycje bez wpisu "resize" w
+          # op_list (np. odm) — błędnie, bo brak resize NIE znaczy że
+          # partycja nie jest członkiem grupy dynamicznej. Każdy plik .img,
+          # który faktycznie został wyciągnięty z super.img, JEST członkiem
+          # tej grupy z definicji. Resize entries służą TYLKO do określania
+          # docelowego rozmiaru, nie przynależności.
+          resize_targets = {}
+          all_op_lines_by_part = {}
           if os.path.exists(op_list):
               with open(op_list, "r") as f:
-                  for line in f:
-                      line = line.strip()
-                      if line.startswith("resize "):
-                          parts = line.split()
-                          if len(parts) >= 2:
-                              part_names.add(parts[1])
+                  op_lines = [l.strip() for l in f if l.strip() and not l.strip().startswith("#")]
+              for line in op_lines:
+                  parts = line.split()
+                  if len(parts) >= 2:
+                      all_op_lines_by_part.setdefault(parts[1], []).append(line)
+                  if line.startswith("resize ") and len(parts) >= 3:
+                      resize_targets[parts[1]] = int(parts[2])
+
+          print("=== Wszystkie linie op_list per partycja (diagnostyka) ===")
+          for pname, lines in all_op_lines_by_part.items():
+              if len(lines) > 1:
+                  print(f"  {pname}: {len(lines)} wpisów -> {lines}")
 
           cmd = (f"lpmake --metadata-size 65536 --super-name super --metadata-slots 2 "
                  f"--device super:{SUPER_SIZE} --group qti_dynamic_partitions:{GROUP_SIZE}")
@@ -401,12 +445,9 @@ jobs:
 
               part_name = file[:-4]
 
-              if part_name not in part_names:
-                  print(f"Pomijam {part_name} – brak wpisu w dynamic_partitions_op_list")
-                  continue
-
               raw_img_path = os.path.join(parts_dir, file)
               sparse_img_path = os.path.join(parts_dir, f"{part_name}.sparse.img")
+              raw_size_before = os.path.getsize(raw_img_path)
 
               try:
                   result = subprocess.run(["file", raw_img_path], capture_output=True, text=True)
@@ -421,6 +462,11 @@ jobs:
               # FIX: use the REAL image size — never declare less than the actual file.
               img_size = os.path.getsize(sparse_img_path)
               part_size = align_to_block(img_size)
+
+              target_note = ""
+              if part_name in resize_targets:
+                  target_note = f" (docelowy rozmiar z op_list: {resize_targets[part_name]})"
+              print(f"  {part_name}: raw={raw_size_before} sparse={img_size} -> deklarowane={part_size}{target_note}")
 
               valid_partitions.append((part_name, sparse_img_path, part_size))
               total_real_size += part_size
