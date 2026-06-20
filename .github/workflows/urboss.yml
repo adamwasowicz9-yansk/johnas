@@ -27,156 +27,128 @@ jobs:
           echo "After:"
           df -h /
 
-      # ── Pobieranie oprogramowania i artefaktów ──────────────────────────
-      - name: Download AP artifact
+      # ── Równoległe pobieranie i instalacja wszystkiego ──────────────────
+      - name: Parallel Download & Install Dependencies
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          mkdir -p base_fw
-          curl -L \
+          mkdir -p firmware_zip ota ota_extracted
+          PIDS=()
+
+          # 1. Pobieranie Firmware (w tle)
+          curl -L -s \
             -H "Authorization: Bearer $GH_PAT" \
             -H "Accept: application/vnd.github+json" \
-            -o ap.zip \
-            "https://api.github.com/repos/durenstudnio/johnas/actions/artifacts/7736838535/zip"
-          unzip -q ap.zip -d base_fw
+            -o firmware.zip \
+            "https://api.github.com/repos/durenstudnio/urban-winner/actions/artifacts/7768363658/zip" &
+          PIDS+=($!)
 
-      - name: Download OTA artifact
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-        run: |
-          mkdir -p ota
-          curl -L \
+          # 2. Pobieranie OTA (w tle)
+          curl -L -s \
             -H "Authorization: Bearer $GH_PAT" \
             -H "Accept: application/vnd.github+json" \
             -o ota.zip \
-            "https://api.github.com/repos/durenstudnio/johnas/actions/artifacts/7709183127/zip"
+            "https://api.github.com/repos/durenstudnio/johnas/actions/artifacts/7709183127/zip" &
+          PIDS+=($!)
+
+          # 3. Pobieranie libssl (w tle)
+          wget -nv -q -O libssl.deb https://github.com/durenjekb/tools/raw/refs/heads/main/libssl1.0.0_1.0.2g-1ubuntu4.20_amd64.deb &
+          PIDS+=($!)
+
+          # 4. Pobieranie lpunpack (w tle)
+          wget -nv -q -O lpunpack https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpunpack &
+          PIDS+=($!)
+
+          # 5. Pobieranie lpmake (w tle)
+          wget -nv -q -O lpmake https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpmake &
+          PIDS+=($!)
+
+          # 6. Pobieranie IMG Patch Tools (w tle)
+          wget -nv -q -O imgpatch.zip https://github.com/erfanoabdi/imgpatchtools/releases/download/0.3/IMG_Patch_Tools_0.3.zip &
+          PIDS+=($!)
+
+          # 7. Instalacja apt-get (w tle)
+          sudo apt-get update -qq && sudo apt-get install -y -qq unzip zip lz4 wget file android-sdk-libsparse-utils python3 jq &
+          PIDS+=($!)
+
+          # Czekanie na zakończenie wszystkich procesów w tle
+          echo "Oczekiwanie na zakończenie wszystkich pobierań i instalacji..."
+          for pid in "${PIDS[@]}"; do
+            wait "$pid" || { echo "BŁĄD: Proces $pid zakończył się niepowodzeniem."; exit 1; }
+          done
+
+          # Post-processing: Rozpakowanie artefaktów
+          echo "Rozpakowywanie firmware.zip..."
+          unzip -q firmware.zip -d firmware_zip
+          rm -f firmware.zip
+
+          echo "Rozpakowywanie ota.zip..."
           unzip -q ota.zip -d ota
+          rm -f ota.zip
 
-      - name: Download CSC package
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-        run: |
-          mkdir -p csc_fw
-          curl -L \
-            -H "Authorization: Bearer $GH_PAT" \
-            -H "Accept: application/vnd.github+json" \
-            -o csc.zip \
-            "https://api.github.com/repos/durenstudnio/johnas/actions/artifacts/7737126908/zip"
-          unzip -q csc.zip -d csc_fw
+          OTAFILE=$(find ota -type f | head -1)
+          unzip -q "$OTAFILE" -d ota_extracted
 
-      # ── Instalacja dependencies systemowych ─────────────────────────────
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y unzip zip lz4 wget file android-sdk-libsparse-utils python3 jq
-
-          echo "Pobieranie libssl1.0.0..."
-          wget -nv https://github.com/danjekb/tools/raw/refs/heads/main/libssl1.0.0_1.0.2g-1ubuntu4.20_amd64.deb
-          sudo dpkg -i libssl1.0.0_*.deb || true
+          # Post-processing: Instalacja pobranych narzędzi
+          sudo dpkg -i libssl.deb || true
           sudo ldconfig
-
-          echo "Pobieranie lpunpack i lpmake..."
-          wget -nv -O lpunpack https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpunpack
-          wget -nv -O lpmake https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpmake
+          rm -f libssl.deb
 
           chmod +x lpunpack lpmake
           sudo cp lpunpack lpmake /usr/local/bin/
 
-      - name: Download IMG Patch Tools
-        run: |
-          wget -nv https://github.com/erfanoabdi/imgpatchtools/releases/download/0.3/IMG_Patch_Tools_0.3.zip
-          unzip -q IMG_Patch_Tools_0.3.zip
+          unzip -q imgpatch.zip
           chmod +x IMG_Patch_Tools_0.3/Linux_x64/*
+          rm -f imgpatch.zip
 
-      # ── Ekstrakcja paczek ───────────────────────────────────────────────
-      - name: Extract OTA
+          echo "✓ Wszystko pobrano, zainstalowano i rozpakowano."
+
+      # ── Rozpakowanie wszystkich komponentów firmware ────────────────────
+      - name: Rozpakuj wszystkie komponenty firmware
         run: |
-          mkdir ota_extracted
-          OTAFILE=$(find ota -type f | head -1)
-          unzip -q "$OTAFILE" -d ota_extracted
+          mkdir -p base_extracted csc_extracted final_output
 
-      - name: Wypakuj AP z artefaktu (obsługa tar.md5)
-        run: |
-          mkdir -p base_extracted
-
-          # FIX: GitHub Actions artifacts czasem zawierają cały spakowany
-          # firmware Samsunga (np. cały zip z BL+AP+CP+CSC+HOME_CSC) zamiast
-          # samego pliku .tar.md5. Rozpakowujemy zagnieżdżone zipy, aż
-          # znajdziemy plik .tar.md5 / .tar (max 3 poziomy, żeby uniknąć
-          # nieskończonej pętli przy uszkodzonych archiwach).
-          for i in 1 2 3; do
-            FOUND_TAR=$(find base_fw -name "*.tar.md5" -o -name "*.tar" 2>/dev/null | head -1)
-            if [ -n "$FOUND_TAR" ]; then
-              break
-            fi
-            NESTED_ZIP=$(find base_fw -name "*.zip" | head -1)
-            if [ -z "$NESTED_ZIP" ]; then
-              break
-            fi
-            echo "Nie znaleziono tar.md5, rozpakowuję zagnieżdżony zip: $NESTED_ZIP"
-            unzip -q -o "$NESTED_ZIP" -d base_fw
-            rm -f "$NESTED_ZIP"
+          for tar in firmware_zip/*.tar.md5; do
+            [ -e "$tar" ] || continue
+            case $(basename "$tar") in
+              BL_*)
+                echo "BL: $tar → kopiuję do final_output"
+                cp "$tar" final_output/$(basename "$tar")
+                ;;
+              AP_*)
+                echo "AP: $tar → wyodrębniam do base_extracted"
+                head -c -33 "$tar" | tar -x -C base_extracted/
+                ;;
+              CP_*)
+                echo "CP: $tar → kopiuję do final_output"
+                cp "$tar" final_output/$(basename "$tar")
+                ;;
+              CSC_*|HOME_CSC_*)
+                if [[ $(basename "$tar") == CSC_* ]]; then
+                  echo "CSC: $tar → wyodrębniam do csc_extracted"
+                  head -c -33 "$tar" | tar -x -C csc_extracted/
+                else
+                  echo "HOME_CSC: $tar → kopiuję do final_output (bez zmian)"
+                  cp "$tar" final_output/$(basename "$tar")
+                fi
+                ;;
+              *)
+                echo "Nieznany plik: $tar"
+                ;;
+            esac
           done
 
-          TARFILE=$(find base_fw -name "*.tar.md5" | head -1)
-          if [ -n "$TARFILE" ]; then
-            echo "Znaleziono AP jako tar.md5: $TARFILE"
-            head -c -33 "$TARFILE" | tar -x -C base_extracted/
-          else
-            TARFILE=$(find base_fw -name "*.tar" | head -1)
-            if [ -n "$TARFILE" ]; then
-              echo "Znaleziono AP jako .tar: $TARFILE"
-              tar -x -f "$TARFILE" -C base_extracted/
-            fi
-          fi
+          rm -rf firmware_zip
 
-          if [ -z "$TARFILE" ]; then
-            echo "BŁĄD: Nie znaleziono pliku .tar.md5 ani .tar w artefakcie AP po rozpakowaniu zagnieżdżonych zipów!"
-            echo "=== Zawartość base_fw (do diagnozy) ==="
-            find base_fw -maxdepth 3
-            exit 1
-          fi
+          echo "=== Zawartość base_extracted ==="
+          ls -lh base_extracted/ || echo "pusto"
+          echo "=== Zawartość csc_extracted ==="
+          ls -lh csc_extracted/ || echo "pusto"
+          echo "=== Zawartość final_output (BL, CP, HOME_CSC) ==="
+          ls -lh final_output/ || echo "pusto"
 
-          find base_extracted -name "*.lz4" -exec cp {} base_extracted/ \; 2>/dev/null || true
-          find base_extracted -name "*.img" -exec cp {} base_extracted/ \; 2>/dev/null || true
-
-          echo "=== Zawartość folderu bazowego po ekstrakcji ==="
-          ls -lh base_extracted/
-
-      - name: Extract CSC
-        run: |
-          mkdir -p csc_extracted
-
-          # FIX: jak w kroku AP — rozpakuj zagnieżdżone zipy, jeśli artefakt
-          # CSC nie zawiera .tar.md5 bezpośrednio.
-          for i in 1 2 3; do
-            FOUND_TAR=$(find csc_fw -name "*.tar.md5" 2>/dev/null | head -1)
-            if [ -n "$FOUND_TAR" ]; then
-              break
-            fi
-            NESTED_ZIP=$(find csc_fw -name "*.zip" | head -1)
-            if [ -z "$NESTED_ZIP" ]; then
-              break
-            fi
-            echo "Nie znaleziono tar.md5, rozpakowuję zagnieżdżony zip: $NESTED_ZIP"
-            unzip -q -o "$NESTED_ZIP" -d csc_fw
-            rm -f "$NESTED_ZIP"
-          done
-
-          CSCFILE=$(find csc_fw -name "*.tar.md5" | head -1)
-          if [ -z "$CSCFILE" ]; then
-            echo "BŁĄD: Nie znaleziono pliku CSC .tar.md5 po rozpakowaniu zagnieżdżonych zipów!"
-            echo "=== Zawartość csc_fw (do diagnozy) ==="
-            find csc_fw -maxdepth 3
-            exit 1
-          fi
-
-          echo "Znaleziono CSC jako tar.md5: $CSCFILE"
-          cd csc_extracted
-          head -c -33 "../$CSCFILE" | tar xf -
-
-      # ── Dekompresja lz4 dla bazy AP ─────────────────────────────────────
-      - name: Zdekompresuj obrazy lz4
+      # ── Dekompresja lz4 dla AP ──────────────────────────────────────────
+      - name: Zdekompresuj obrazy lz4 (AP)
         run: |
           cd base_extracted
           for f in *.lz4; do
@@ -185,14 +157,40 @@ jobs:
             lz4 -d "$f" "${f%.lz4}"
             rm "$f"
           done
-          echo "=== Rozpakowane obrazy bazy ==="
+          echo "=== Rozpakowane obrazy bazy (AP) ==="
           ls -lh *.img 2>/dev/null || echo "Brak .img"
+
+      # ── Przygotowanie CSC i extra partitions (dekompresja lz4 CSC) ──────
+      - name: Prepare CSC and Extra partitions
+        run: |
+          mkdir -p extra_partitions
+
+          cd csc_extracted
+          for f in *.lz4; do
+            [ -f "$f" ] || continue
+            echo "Dekompresuję CSC: $f"
+            lz4 -d "$f" "${f%.lz4}"
+            rm "$f"
+          done
+          cd ..
+
+          if [ -f base_extracted/vm-bootsys.img ]; then
+            cp base_extracted/vm-bootsys.img extra_partitions/
+          fi
+          if [ -f csc_extracted/prism.img ]; then
+            cp csc_extracted/prism.img extra_partitions/prism.img
+          fi
+          if [ -f csc_extracted/optics.img ]; then
+            cp csc_extracted/optics.img extra_partitions/optics.img
+          fi
+
+          echo "===== Extra/CSC Partitions ready ====="
+          ls -lh extra_partitions/
 
       # ── Rozbijanie kontenera super.img na podobrazy ──────────────────────
       - name: Unpack super.img to get sub-images
         run: |
           mkdir -p partitions
-
           SUPER_PATH=$(find base_extracted -name "super.img" | head -1)
 
           if [ -z "$SUPER_PATH" ]; then
@@ -201,11 +199,6 @@ jobs:
             exit 1
           fi
 
-          # FIX: ustalamy PRAWDZIWY rozmiar super partycji TEGO urządzenia
-          # (z nagłówka sparse albo rozmiaru pliku raw) — zamiast zgadywać
-          # SUPER_SIZE/GROUP_SIZE na sztywno w kolejnym kroku. Zapisujemy do
-          # pliku, żeby przetrwało nawet jeśli super.img zostanie później
-          # usunięty/skonwertowane.
           FILE_INFO=$(file "$SUPER_PATH")
           echo "Info o super.img: $FILE_INFO"
 
@@ -216,13 +209,9 @@ jobs:
           else
             REAL_SUPER_SIZE=$(stat -c%s "$SUPER_PATH")
           fi
-          echo "Prawdziwy rozmiar super.img (z tego urządzenia): $REAL_SUPER_SIZE bajtów"
+          echo "Prawdziwy rozmiar super.img: $REAL_SUPER_SIZE bajtów"
           echo "$REAL_SUPER_SIZE" > base_extracted/super_real_size.txt
 
-          # FIX (z tutoriala): NIE konwertujemy sparse -> raw. lpunpack ma
-          # czytać super.img bezpośrednio jako sparse. Konwersja do raw jest
-          # tylko fallbackiem, jeśli ten konkretny binarny lpunpack faktycznie
-          # nie wspiera sparse (sprawdzamy po exit code).
           echo "Próbuję lpunpack bezpośrednio na sparse super.img..."
           if lpunpack "$SUPER_PATH" partitions/; then
             echo "✓ lpunpack zadziałał bezpośrednio na sparse super.img."
@@ -236,33 +225,7 @@ jobs:
           echo "===== Extracted partitions from super ====="
           ls -lh partitions/
 
-      # ── Przygotowanie obrazów CSC i Extra (Z dala od folderu 'partitions') ──
-      - name: Prepare CSC and Extra partitions
-        run: |
-          mkdir -p extra_partitions
-
-          if [ -f base_extracted/vm-bootsys.img ]; then
-            cp base_extracted/vm-bootsys.img extra_partitions/
-          fi
-
-          if [ -f csc_extracted/prism.img.lz4 ]; then
-            echo "Decompressing prism.img.lz4 from CSC..."
-            lz4 -d csc_extracted/prism.img.lz4 extra_partitions/prism.img
-          fi
-
-          if [ -f csc_extracted/optics.img.lz4 ]; then
-            echo "Decompressing optics.img.lz4 from CSC..."
-            lz4 -d csc_extracted/optics.img.lz4 extra_partitions/optics.img
-          fi
-
-          echo "===== Extra/CSC Partitions ready ====="
-          ls -lh extra_partitions/
-
-      # ── Łatanie partycji dynamicznych przez BlockImageUpdate ─────────────
-      # FIX: Patch failures (block hash mismatches from AP/OTA version mismatch)
-      # no longer abort the workflow. A failed partition keeps its base image,
-      # which is then used as-is in the super rebuild. Patched partitions take
-      # priority; base fallback is clearly logged for diagnosis.
+      # ── Patchowanie wszystkich partycji dynamicznych ──────────────────────
       - name: Patch ALL dynamic partitions
         run: |
           echo "===== STARTING AUTOMATIC LOOP PATCHING ====="
@@ -273,34 +236,22 @@ jobs:
             echo "=== dynamic_partitions_op_list (resize entries) ==="
             grep -E "^resize " "$OP_LIST" || echo "(brak wpisów resize)"
           else
-            echo "⚠️  Brak dynamic_partitions_op_list w OTA — resize zostanie pominięty dla wszystkich partycji."
+            echo "⚠️  Brak dynamic_partitions_op_list w OTA — resize zostanie pominięty."
           fi
 
           for list in ota_extracted/*.transfer.list; do
             [ -e "$list" ] || continue
             part_name=$(basename "$list" .transfer.list)
-
             echo "Processing partition: $part_name"
 
-            # FIX: prism/optics (i podobne) nie są częścią super.img, więc nie
-            # trafiają do partitions/ — ich obraz bazowy leży w extra_partitions/
-            # (rozpakowany z CSC). Sprawdzamy oba miejsca.
             BASE_IMG=""
             if [ -f "partitions/${part_name}.img" ]; then
               BASE_IMG="partitions/${part_name}.img"
             elif [ -f "extra_partitions/${part_name}.img" ]; then
               BASE_IMG="extra_partitions/${part_name}.img"
-              echo "  (obraz bazowy znaleziony w extra_partitions/, nie w partitions/)"
             fi
 
             if [ -n "$BASE_IMG" ]; then
-              # ── KROK OBOWIĄZKOWY: resize do rozmiaru z dynamic_partitions_op_list ──
-              # FIX: dla GROW musimy zrobić truncate PRZED patchowaniem (żeby było
-              # miejsce na nowe bloki). Dla SHRINK truncate PRZED patchowaniem jest
-              # BŁĘDNY — obcina dane źródłowe, które BlockImageUpdate jeszcze musi
-              # odczytać (move/bsdiff), co objawia się jako wieczne zawieszenie
-              # (potwierdzone empirycznie na partycji vendor). Dla SHRINK robimy
-              # truncate PO udanym patchu.
               RESIZE_MODE="none"
               TARGET_SIZE=""
               if [ -f "$OP_LIST" ]; then
@@ -308,24 +259,17 @@ jobs:
                 if [ -n "$TARGET_SIZE" ]; then
                   CURRENT_SIZE=$(stat -c%s "$BASE_IMG")
                   if [ "$TARGET_SIZE" -gt "$CURRENT_SIZE" ]; then
-                    echo "  GROW $part_name: $CURRENT_SIZE -> $TARGET_SIZE bajtów (resize PRZED patchem)"
                     truncate -s "$TARGET_SIZE" "$BASE_IMG"
                     RESIZE_MODE="grow"
                   elif [ "$TARGET_SIZE" -lt "$CURRENT_SIZE" ]; then
-                    echo "  SHRINK $part_name: $CURRENT_SIZE -> $TARGET_SIZE bajtów (resize PO patchu)"
                     RESIZE_MODE="shrink"
                   fi
                 fi
               fi
 
-              # Work on a copy so the base image is preserved on failure
               cp "$BASE_IMG" "${BASE_IMG}.bak"
-
-              # FIX: BlockImageUpdate's process exit code ($?) nie zawsze odzwierciedla
-              # wewnętrzny status — narzędzie często zwraca 0 z procesu nawet gdy
-              # wewnętrznie loguje "Done with error code : -1" (np. przy mismatchu).
-              # Parsujemy faktyczny tekst, nie ufamy tylko $?.
               PATCH_LOG=$(mktemp)
+
               ./IMG_Patch_Tools_0.3/Linux_x64/BlockImageUpdate \
                 "$BASE_IMG" \
                 "ota_extracted/${part_name}.transfer.list" \
@@ -334,7 +278,6 @@ jobs:
               PROC_EXIT=${PIPESTATUS[0]}
 
               INTERNAL_CODE=$(grep -oE "error code[[:space:]]*:[[:space:]]*-?[0-9]+" "$PATCH_LOG" | tail -1 | grep -oE "\-?[0-9]+$")
-
               if [ -n "$INTERNAL_CODE" ] && [ "$INTERNAL_CODE" -ne 0 ]; then
                 PATCH_EXIT=$INTERNAL_CODE
               else
@@ -343,45 +286,28 @@ jobs:
               rm -f "$PATCH_LOG"
 
               if [ "$PATCH_EXIT" -ne 0 ]; then
-                echo "⚠️  WARNING: Patching $part_name failed (kod $PATCH_EXIT) — restoring base image as fallback."
+                echo "⚠️  WARNING: Patching $part_name failed (kod $PATCH_EXIT) — restoring base."
                 mv "${BASE_IMG}.bak" "$BASE_IMG"
                 PATCH_FAILED_PARTS="$PATCH_FAILED_PARTS $part_name"
               else
                 echo "✓  $part_name patched successfully."
                 rm -f "${BASE_IMG}.bak"
                 if [ "$RESIZE_MODE" = "shrink" ] && [ -n "$TARGET_SIZE" ]; then
-                  echo "  Wykonuję odłożony shrink: $part_name -> $TARGET_SIZE bajtów"
                   truncate -s "$TARGET_SIZE" "$BASE_IMG"
                 fi
               fi
-            else
-              echo "WARNING: Base image for $part_name not found in partitions or extra_partitions, skipping!"
             fi
           done
 
-          if [ -n "$PATCH_FAILED_PARTS" ]; then
-            echo ""
-            echo "⚠️  Partitions that used base fallback (patch failed):$PATCH_FAILED_PARTS"
-            echo "    This usually means the AP firmware and OTA are from different builds."
-            echo "    The output will be assembled but may not be fully updated for those partitions."
-          fi
-
       # ── Rekonstrukcja SUPER ──────────────────────────────────────────────
-      # FIX: The old code scaled down declared partition sizes proportionally
-      # when the total exceeded GROUP_SIZE. This caused lpmake to reject images
-      # because the declared slot was smaller than the actual image file.
-      # The fix: always declare each partition at its REAL image size. If the
-      # true total exceeds GROUP_SIZE the build fails with a clear message
-      # instead of a misleading lpmake exit-73 crash.
       - name: Przebudowa dynamicznego obrazu SUPER
         run: |
           mkdir -p final_partitions
           mkdir -p super_input
-
           cp partitions/*.img super_input/ 2>/dev/null || true
 
           echo "=== Dynamiczne generowanie argumentów lpmake ==="
-          python3 -c '
+          python3 << 'EOF'
           import os
           import math
           import subprocess
@@ -391,47 +317,28 @@ jobs:
           parts_dir = "super_input"
           output_img = "final_partitions/super.img"
 
-          # FIX: zamiast zahardkodowanej (i błędnej — zbyt małej o >1GB)
-          # wartości, czytamy PRAWDZIWY rozmiar super.img tego urządzenia,
-          # zapisany w kroku "Unpack super.img" z nagłówka sparse.
           REAL_SIZE_FILE = "base_extracted/super_real_size.txt"
           if os.path.exists(REAL_SIZE_FILE):
               with open(REAL_SIZE_FILE) as f:
                   REAL_SUPER_SIZE = int(f.read().strip())
               SUPER_SIZE = REAL_SUPER_SIZE
-              # mały margines bezpieczeństwa na metadata (2 sloty * 65536B = 131072B)
               GROUP_SIZE = REAL_SUPER_SIZE - 1048576
-              print(f"Użyto wykrytego rozmiaru super.img tego urządzenia: SUPER_SIZE={SUPER_SIZE}, GROUP_SIZE={GROUP_SIZE}")
+              print(f"Użyto wykrytego rozmiaru super.img: SUPER_SIZE={SUPER_SIZE}, GROUP_SIZE={GROUP_SIZE}")
           else:
-              print("⚠️  Brak super_real_size.txt — używam wartości domyślnych (mogą być nieprawidłowe dla tego urządzenia!)")
+              print("⚠️  Brak super_real_size.txt — używam wartości domyślnych!")
               SUPER_SIZE = 9126809600
               GROUP_SIZE = 9122611200
 
           def align_to_block(size):
               return int(math.ceil(size / 4096.0) * 4096)
 
-          # FIX: poprzednia logika pomijała partycje bez wpisu "resize" w
-          # op_list (np. odm) — błędnie, bo brak resize NIE znaczy że
-          # partycja nie jest członkiem grupy dynamicznej. Każdy plik .img,
-          # który faktycznie został wyciągnięty z super.img, JEST członkiem
-          # tej grupy z definicji. Resize entries służą TYLKO do określania
-          # docelowego rozmiaru, nie przynależności.
           resize_targets = {}
-          all_op_lines_by_part = {}
           if os.path.exists(op_list):
               with open(op_list, "r") as f:
-                  op_lines = [l.strip() for l in f if l.strip() and not l.strip().startswith("#")]
-              for line in op_lines:
-                  parts = line.split()
-                  if len(parts) >= 2:
-                      all_op_lines_by_part.setdefault(parts[1], []).append(line)
-                  if line.startswith("resize ") and len(parts) >= 3:
-                      resize_targets[parts[1]] = int(parts[2])
-
-          print("=== Wszystkie linie op_list per partycja (diagnostyka) ===")
-          for pname, lines in all_op_lines_by_part.items():
-              if len(lines) > 1:
-                  print(f"  {pname}: {len(lines)} wpisów -> {lines}")
+                  for line in f:
+                      line = line.strip()
+                      if line.startswith("resize ") and len(line.split()) >= 3:
+                          resize_targets[line.split()[1]] = int(line.split()[2])
 
           cmd = (f"lpmake --metadata-size 65536 --super-name super --metadata-slots 2 "
                  f"--device super:{SUPER_SIZE} --group qti_dynamic_partitions:{GROUP_SIZE}")
@@ -444,7 +351,6 @@ jobs:
                   continue
 
               part_name = file[:-4]
-
               raw_img_path = os.path.join(parts_dir, file)
               sparse_img_path = os.path.join(parts_dir, f"{part_name}.sparse.img")
               raw_size_before = os.path.getsize(raw_img_path)
@@ -459,31 +365,12 @@ jobs:
                   print(f"img2simg failed for {part_name} ({e}), copying raw as fallback")
                   subprocess.run(["cp", raw_img_path, sparse_img_path])
 
-              # FIX: lpmake oczekuje LOGICZNEGO rozmiaru partycji (czyli
-              # rzeczywistego/raw rozmiaru), nie rozmiaru pliku sparse na
-              # dysku! Sparse kompresuje zera, więc plik na dysku jest
-              # mniejszy niż logiczny rozmiar, co powodowało
-              # "Image for partition X is greater than its size".
-              img_size = os.path.getsize(sparse_img_path)
               part_size = align_to_block(raw_size_before)
-
-              target_note = ""
-              if part_name in resize_targets:
-                  target_note = f" (docelowy rozmiar z op_list: {resize_targets[part_name]})"
-              print(f"  {part_name}: raw={raw_size_before} sparse={img_size} -> deklarowane={part_size}{target_note}")
-
               valid_partitions.append((part_name, sparse_img_path, part_size))
               total_real_size += part_size
 
-          print(f"Total partition size required: {total_real_size} bytes")
-          print(f"GROUP_SIZE limit:              {GROUP_SIZE} bytes")
-
           if total_real_size > GROUP_SIZE:
-              print(f"")
               print(f"ERROR: Patched partitions ({total_real_size} bytes) exceed GROUP_SIZE ({GROUP_SIZE} bytes).")
-              print(f"       Overflow: {total_real_size - GROUP_SIZE} bytes ({(total_real_size - GROUP_SIZE) / 1024 / 1024:.1f} MB)")
-              print(f"       This means the AP firmware and OTA produce images that cannot fit")
-              print(f"       in this device'\''s super partition. Verify AP and OTA build versions match.")
               sys.exit(1)
 
           for p_name, p_path, p_size in valid_partitions:
@@ -494,7 +381,7 @@ jobs:
 
           with open("lpmake_cmd.sh", "w") as out:
               out.write(cmd + "\n")
-          '
+          EOF
 
           echo "=== Wygenerowana komenda lpmake ==="
           cat lpmake_cmd.sh
@@ -510,7 +397,7 @@ jobs:
             exit 1
           fi
 
-      # ── Kopiowanie statycznych obrazów i CSC (Na zewnątrz super) ─────────
+      # ── Kopiowanie obrazów statycznych spoza super ───────────────────────
       - name: Skopiuj obrazy statyczne spoza super
         run: |
           for img in boot.img dtbo.img vbmeta.img vbmeta_system.img init_boot.img vendor_boot.img vm-bootsys.img prism.img optics.img; do
@@ -530,102 +417,89 @@ jobs:
             fi
           done
 
-      # ── Pakowanie gotowego tar.md5 pod Odina ────────────────────────────
-      - name: Spakuj AP tar.md5
+      # ── Pakowanie AP i CSC osobno ────────────────────────────────────────
+      - name: Spakuj AP i CSC tar.md5
         run: |
-          mkdir -p final_output
-
-          CSC_ORIGINAL=$(find csc_fw -name "*.tar.md5" 2>/dev/null | head -1)
-          if [ -n "$CSC_ORIGINAL" ]; then
-            BASE_NAME=$(basename "$CSC_ORIGINAL" .tar.md5 | sed 's/^CSC_/AP_/')
-          else
-            BASE_NAME="AP_Patched_Firmware"
+          mkdir ap_final
+          for img in boot dtbo vbmeta vbmeta_system init_boot vendor_boot vm-bootsys super; do
+            if [ -f final_partitions/${img}.img ]; then
+              cp final_partitions/${img}.img ap_final/
+            fi
+          done
+          if [ -f final_partitions/recovery.img ]; then
+            cp final_partitions/recovery.img ap_final/
           fi
 
-          OUTPUT_TAR="${BASE_NAME}_patched.tar"
+          if [ -n "$(ls ap_final/*.img 2>/dev/null)" ]; then
+            cd ap_final
+            tar -cf "../final_output/AP_patched.tar" *.img
+            cd ..
+          fi
+          rm -rf ap_final
 
-          echo "=== Wolne miejsce przed pakowaniem ==="
-          df -h /
+          mkdir csc_final
+          for img in prism optics; do
+            if [ -f final_partitions/${img}.img ]; then
+              cp final_partitions/${img}.img csc_final/
+            fi
+          done
+          find csc_extracted -name "*.img" ! -name "prism.img" ! -name "optics.img" -exec cp {} csc_final/ \;
 
-          echo "Pakowanie obrazów do: final_output/$OUTPUT_TAR"
-          cd final_partitions
-          tar -cf "../final_output/$OUTPUT_TAR" *.img
-          cd ..
+          if [ -n "$(ls csc_final/*.img 2>/dev/null)" ]; then
+            cd csc_final
+            tar -cf "../final_output/CSC_patched.tar" *.img
+            cd ..
+          fi
+          rm -rf csc_final
 
-          echo "=== Wolne miejsce po utworzeniu TAR ==="
-          df -h /
-
-          echo "Czyszczenie pozostałości w celu odzyskania miejsca..."
-          rm -rf final_partitions base_fw ota ota_extracted base_extracted csc_fw csc_extracted extra_partitions partitions super_input
-
-          echo "Generowanie sumy kontrolnej MD5 dla Odina..."
           cd final_output
-          md5sum -b "$OUTPUT_TAR" >> "$OUTPUT_TAR"
-          mv "$OUTPUT_TAR" "${OUTPUT_TAR}.md5"
-
-          echo "=== Zawartość folderu wyjściowego ==="
-          ls -lh ./
+          for f in *.tar; do
+            if [ -f "$f" ]; then
+              md5sum -b "$f" >> "${f}.md5"
+              mv "$f" "${f}.md5"
+            fi
+          done
           cd ..
 
-      # ── Upload do GitHub Artifacts (Zapas) ──────────────────────────────
-      - name: Upload AP tar.md5 do Artifacts
+          rm -rf final_partitions base_extracted ota ota_extracted csc_extracted extra_partitions partitions super_input
+
+          echo "=== Zawartość final_output ==="
+          ls -lh final_output/
+
+      # ── Upload wszystkich plików do Artifacts ────────────────────────────
+      - name: Upload wszystkich plików do Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: AP_patched_Odin
+          name: Patched_Firmware
           path: final_output/*.tar.md5
           retention-days: 7
 
-      # ── Upload na GoFile (API v2) ───────────────────────────────────────
+      # ── Upload na GoFile (wszystkie pliki) ──────────────────────────────
       - name: Upload na GoFile
         env:
           GOFILE_TOKEN: ${{ secrets.GOFILE_TOKEN }}
         run: |
-          FILE=$(find final_output -name "*.tar.md5" | head -1)
-
-          if [ ! -f "$FILE" ]; then
-            echo "ERROR: Nie znaleziono pliku .tar.md5"
-            exit 1
-          fi
-
-          echo "Plik do uploadu: $FILE"
-
-          echo "Pobieranie najlepszego serwera GoFile..."
-          SERVER=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[0].name')
-
-          if [ -z "$SERVER" ] || [ "$SERVER" = "null" ]; then
-            echo "ERROR: Nie udało się pobrać serwera GoFile"
-            exit 1
-          fi
-
-          echo "Serwer: $SERVER"
-
-          RESPONSE=$(curl -s \
-            -F "file=@${FILE}" \
-            -F "token=${GOFILE_TOKEN}" \
-            "https://${SERVER}.gofile.io/uploadFile")
-
-          echo "$RESPONSE"
-
-          STATUS=$(echo "$RESPONSE" | jq -r '.status')
-
-          if [ "$STATUS" != "ok" ]; then
-            echo "ERROR: Upload nie powiódł się"
-            exit 1
-          fi
-
-          DOWNLOAD_PAGE=$(echo "$RESPONSE" | jq -r '.data.downloadPage')
-          DIRECT_LINK=$(echo "$RESPONSE" | jq -r '.data.directLink')
-
-          echo ""
-          echo "======================================="
-          echo "UPLOAD ZAKOŃCZONY"
-          echo ""
-          echo "DOWNLOAD PAGE:"
-          echo "$DOWNLOAD_PAGE"
-          echo ""
-          echo "DIRECT LINK:"
-          echo "$DIRECT_LINK"
-          echo "======================================="
-
-          echo "download_page=$DOWNLOAD_PAGE" >> $GITHUB_OUTPUT
-          echo "direct_link=$DIRECT_LINK" >> $GITHUB_OUTPUT
+          for FILE in final_output/*.tar.md5; do
+            [ -e "$FILE" ] || continue
+            echo "Upload: $FILE"
+            SERVER=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[] | select(.status == "ok") | .name' | head -1)
+            if [ -z "$SERVER" ] || [ "$SERVER" = "null" ]; then
+              echo "ERROR: Nie udało się pobrać działającego serwera GoFile"
+              exit 1
+            fi
+            echo "Wybrany serwer: $SERVER"
+            RESPONSE=$(curl -s -F "file=@${FILE}" -F "token=${GOFILE_TOKEN}" "https://${SERVER}.gofile.io/uploadFile")
+            echo "$RESPONSE" | jq .
+            STATUS=$(echo "$RESPONSE" | jq -r '.status')
+            if [ "$STATUS" != "ok" ]; then
+              echo "ERROR: Upload nie powiódł się dla $FILE"
+              exit 1
+            fi
+            DOWNLOAD_PAGE=$(echo "$RESPONSE" | jq -r '.data.downloadPage')
+            DIRECT_LINK=$(echo "$RESPONSE" | jq -r '.data.directLink')
+            echo "======================================="
+            echo "UPLOAD ZAKOŃCZONY: $FILE"
+            echo "DOWNLOAD PAGE: $DOWNLOAD_PAGE"
+            echo "DIRECT LINK: $DIRECT_LINK"
+            echo "======================================="
+          done
