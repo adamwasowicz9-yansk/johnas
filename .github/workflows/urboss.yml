@@ -36,46 +36,54 @@ jobs:
           PIDS=()
 
           # 1. Pobieranie Firmware (w tle)
-          curl -L -s \
+          (curl -L -f -s \
             -H "Authorization: Bearer $GH_PAT" \
             -H "Accept: application/vnd.github+json" \
             -o firmware.zip \
-            "https://api.github.com/repos/durenstudnio/urban-winner/actions/artifacts/7768363658/zip" &
+            "https://api.github.com/repos/durenstudnio/urban-winner/actions/artifacts/7768363658/zip") &
           PIDS+=($!)
 
           # 2. Pobieranie OTA (w tle)
-          curl -L -s \
+          (curl -L -f -s \
             -H "Authorization: Bearer $GH_PAT" \
             -H "Accept: application/vnd.github+json" \
             -o ota.zip \
-            "https://api.github.com/repos/durenstudnio/johnas/actions/artifacts/7709183127/zip" &
+            "https://api.github.com/repos/durenstudnio/johnas/actions/artifacts/7709183127/zip") &
           PIDS+=($!)
 
-          # 3. Pobieranie libssl (w tle)
-          wget -nv -q -O libssl.deb https://github.com/durenjekb/tools/raw/refs/heads/main/libssl1.0.0_1.0.2g-1ubuntu4.20_amd64.deb &
+          # 3. Pobieranie libssl (w tle) - POPRAWIONY LINK (danjekb)
+          (wget -nv -q -O libssl.deb "https://github.com/danjekb/tools/raw/refs/heads/main/libssl1.0.0_1.0.2g-1ubuntu4.20_amd64.deb") &
           PIDS+=($!)
 
           # 4. Pobieranie lpunpack (w tle)
-          wget -nv -q -O lpunpack https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpunpack &
+          (wget -nv -q -O lpunpack "https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpunpack") &
           PIDS+=($!)
 
           # 5. Pobieranie lpmake (w tle)
-          wget -nv -q -O lpmake https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpmake &
+          (wget -nv -q -O lpmake "https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpmake") &
           PIDS+=($!)
 
           # 6. Pobieranie IMG Patch Tools (w tle)
-          wget -nv -q -O imgpatch.zip https://github.com/erfanoabdi/imgpatchtools/releases/download/0.3/IMG_Patch_Tools_0.3.zip &
+          (wget -nv -q -O imgpatch.zip "https://github.com/erfanoabdi/imgpatchtools/releases/download/0.3/IMG_Patch_Tools_0.3.zip") &
           PIDS+=($!)
 
           # 7. Instalacja apt-get (w tle)
-          sudo apt-get update -qq && sudo apt-get install -y -qq unzip zip lz4 wget file android-sdk-libsparse-utils python3 jq &
+          (sudo apt-get update -qq && sudo apt-get install -y -qq unzip zip lz4 wget file android-sdk-libsparse-utils python3 jq) &
           PIDS+=($!)
 
           # Czekanie na zakończenie wszystkich procesów w tle
           echo "Oczekiwanie na zakończenie wszystkich pobierań i instalacji..."
+          FAIL=0
           for pid in "${PIDS[@]}"; do
-            wait "$pid" || { echo "BŁĄD: Proces $pid zakończył się niepowodzeniem."; exit 1; }
+            if ! wait "$pid"; then
+              echo "BŁĄD: Proces $pid zakończył się niepowodzeniem."
+              FAIL=1
+            fi
           done
+          
+          if [ "$FAIL" -eq 1 ]; then
+            exit 1
+          fi
 
           # Post-processing: Rozpakowanie artefaktów
           echo "Rozpakowywanie firmware.zip..."
