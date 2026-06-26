@@ -6,6 +6,8 @@ on:
 jobs:
   extract:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -38,7 +40,7 @@ jobs:
       - name: Download ZIP from Google Drive
         run: |
           mkdir -p gdrive_download
-          gdown --id 1cnDhDac0iu4FJlNRrhAu0obbYdW6yNhC -O gdrive_download/rom_images.zip
+          gdown "https://drive.google.com/uc?id=1cnDhDac0iu4FJlNRrhAu0obbYdW6yNhC" -O gdrive_download/rom_images.zip
           echo "=== Pobrany plik ==="
           ls -lh gdrive_download/
 
@@ -106,30 +108,48 @@ jobs:
           echo "=== Wolne miejsce po ekstrakcji ==="
           df -h /
 
-      # ── Usuwanie ciężkich artefaktów przed pakowaniem ───────────────────
+      # ── Usuwanie .img przed pakowaniem ───────────────────────────────────
       - name: Cleanup before packing
         run: |
-          rm -rf extracted
+          rm -rf extracted gdrive_download
           df -h /
 
-      # ── Pakowanie zawartości do ZIP ──────────────────────────────────────
-      - name: Pack extracted contents into ZIP
+      # ── Pakowanie każdej partycji osobno do ZIP ──────────────────────────
+      - name: Pack each partition into separate ZIPs
         run: |
           mkdir -p final_output
-          echo "=== Pakowanie img_contents/ do ZIP ==="
 
-          cd img_contents
-          zip -0 -r ../final_output/ROM_Contents.zip .
-          cd ..
+          for dir in img_contents/*/; do
+            [ -d "$dir" ] || continue
+            name=$(basename "$dir")
+            echo "=============================="
+            echo "Pakuję: $name -> final_output/${name}.zip"
+            echo "=============================="
 
-          echo "=== Wynikowy ZIP ==="
+            cd "$dir"
+            zip -r -4 "../../final_output/${name}.zip" .
+            cd ../..
+
+            echo "Rozmiar: $(ls -lh final_output/${name}.zip | awk '{print $5}')"
+          done
+
+          echo "=== Wszystkie paczki ==="
           ls -lh final_output/
           df -h /
 
-      # ── Upload do GitHub Artifacts ───────────────────────────────────────
-      - name: Upload ZIP to Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ROM_Contents_ZIP
-          path: final_output/ROM_Contents.zip
-          retention-days: 5
+      # ── Tworzenie Release i upload plików ───────────────────────────────
+      - name: Create GitHub Release and upload ZIPs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="rom-$(date +'%Y%m%d-%H%M%S')"
+          TITLE="ROM Contents $TAG"
+
+          echo "Tworzę release: $TAG"
+          gh release create "$TAG" \
+            --title "$TITLE" \
+            --notes "Automatycznie wypakowane partycje ROM" \
+            final_output/*.zip
+
+          echo "=== Release gotowy ==="
+          gh release view "$TAG"
