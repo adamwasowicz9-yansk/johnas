@@ -33,7 +33,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y unzip zip lz4 android-sdk-libsparse-utils
+          sudo apt-get install -y unzip zip lz4 android-sdk-libsparse-utils f2fs-tools
           pip install -q gdown
 
       # ── Pobranie ZIP z Google Drive ─────────────────────────────────────
@@ -95,8 +95,14 @@ jobs:
 
             mkdir -p "img_contents/$name"
 
-            sudo mount -o loop,ro "$img" /mnt/img_mount 2>/dev/null \
-              || sudo mount -o loop,ro,errors=continue "$img" /mnt/img_mount
+            if sudo mount -o loop,ro "$img" /mnt/img_mount 2>/dev/null; then
+              echo "Zamontowano jako ext4/auto"
+            elif sudo mount -t f2fs -o loop,ro "$img" /mnt/img_mount 2>/dev/null; then
+              echo "Zamontowano jako f2fs"
+            else
+              echo "ERROR: Nie można zamontować $img, pomijam!"
+              continue
+            fi
 
             sudo cp -a /mnt/img_mount/. "img_contents/$name/"
             sudo umount /mnt/img_mount
