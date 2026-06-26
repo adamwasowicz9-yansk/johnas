@@ -1,10 +1,10 @@
-name: fhutem, Vendor, Product ZIP)
+name: Download, Extract IMG Contents and Upload
 
 on:
   workflow_dispatch:
 
 jobs:
-  patch:
+  extract:
     runs-on: ubuntu-latest
 
     steps:
@@ -27,210 +27,109 @@ jobs:
           echo "After:"
           df -h /
 
-      # ── Pobieranie oprogramowania i artefaktów ──────────────────────────
-      - name: Download AP artifact
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-        run: |
-          mkdir -p base_fw
-          curl -L \
-            -H "Authorization: Bearer $GH_PAT" \
-            -H "Accept: application/vnd.github+json" \
-            -o ap.zip \
-            "https://api.github.com/repos/durenstudnio/urban-winner/actions/artifacts/7705052240/zip"
-          unzip -q ap.zip -d base_fw
-
-      - name: Download OTA artifact
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-        run: |
-          mkdir -p ota
-          curl -L \
-            -H "Authorization: Bearer $GH_PAT" \
-            -H "Accept: application/vnd.github+json" \
-            -o ota.zip \
-            "https://api.github.com/repos/durenstudnio/johnas/actions/artifacts/7709183127/zip"
-          unzip -q ota.zip -d ota
-
-      - name: Download CSC package
-        run: |
-          mkdir -p csc_fw
-          wget -nv "https://github.com/adamwasowicz9-yansk/johnas/releases/download/v69/m1v7kv.zip" -O m1v7kv.zip
-          unzip -q m1v7kv.zip -d csc_fw
-
-      # ── Instalacja dependencies systemowych ─────────────────────────────
+      # ── Instalacja zależności ────────────────────────────────────────────
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y unzip zip lz4 wget file android-sdk-libsparse-utils python3 jq
-          
-          echo "Pobieranie libssl1.0.0..."
-          wget -nv https://github.com/danjekb/tools/raw/refs/heads/main/libssl1.0.0_1.0.2g-1ubuntu4.20_amd64.deb
-          sudo dpkg -i libssl1.0.0_*.deb || true
-          sudo ldconfig
+          sudo apt-get update -qq
+          sudo apt-get install -y unzip zip lz4 android-sdk-libsparse-utils
+          pip install -q gdown
 
-          echo "Pobieranie lpunpack..."
-          wget -nv -O lpunpack https://raw.githubusercontent.com/whyshhnuv/lpunpack-lpmake-mirror/Linux-debian/binary/lpunpack
-          
-          chmod +x lpunpack
-          sudo cp lpunpack /usr/local/bin/
-
-      - name: Download IMG Patch Tools
+      # ── Pobranie ZIP z Google Drive ─────────────────────────────────────
+      - name: Download ZIP from Google Drive
         run: |
-          wget -nv https://github.com/erfanoabdi/imgpatchtools/releases/download/0.3/IMG_Patch_Tools_0.3.zip
-          unzip -q IMG_Patch_Tools_0.3.zip
-          chmod +x IMG_Patch_Tools_0.3/Linux_x64/*
+          mkdir -p gdrive_download
+          gdown --id 1cnDhDac0iu4FJlNRrhAu0obbYdW6yNhC -O gdrive_download/rom_images.zip
+          echo "=== Pobrany plik ==="
+          ls -lh gdrive_download/
 
-      # ── Ekstrakcja paczek ───────────────────────────────────────────────
-      - name: Extract OTA
+      # ── Rozpakowanie zewnętrznego ZIP ───────────────────────────────────
+      - name: Extract outer ZIP
         run: |
-          mkdir ota_extracted
-          OTAFILE=$(find ota -type f | head -1)
-          unzip -q "$OTAFILE" -d ota_extracted
+          mkdir -p extracted
+          unzip -q gdrive_download/rom_images.zip -d extracted
+          rm gdrive_download/rom_images.zip
+          echo "=== Zawartość po rozpakowaniu ZIP ==="
+          ls -lh extracted/
 
-      - name: Wypakuj AP z artefaktu (obsługa tar.md5)
+      # ── Dekompresja lz4 (jeśli obrazy są skompresowane) ─────────────────
+      - name: Decompress lz4 images (if any)
         run: |
-          mkdir -p base_extracted
-          TARFILE=$(find base_fw -name "*.tar.md5" | head -1)
-          if [ -n "$TARFILE" ]; then
-            echo "Znaleziono AP jako tar.md5: $TARFILE"
-            head -c -33 "$TARFILE" | tar -x -C base_extracted/
-          else
-            TARFILE=$(find base_fw -name "*.tar" | head -1)
-            if [ -n "$TARFILE" ]; then
-              echo "Znaleziono AP jako .tar: $TARFILE"
-              tar -x -f "$TARFILE" -C base_extracted/
-            fi
-          fi
-
-          find base_extracted -name "*.lz4" -exec cp {} base_extracted/ \; 2>/dev/null || true
-          find base_extracted -name "*.img" -exec cp {} base_extracted/ \; 2>/dev/null || true
-
-          echo "=== Zawartość folderu bazowego po ekstrakcji ==="
-          ls -lh base_extracted/
-
-      - name: Extract CSC
-        run: |
-          mkdir csc_extracted
-          cd csc_extracted
-          CSCFILE=$(find ../csc_fw -name "*.tar.md5" | head -1)
-          head -c -33 "$CSCFILE" | tar xf -
-
-      # ── Dekompresja lz4 dla bazy AP ─────────────────────────────────────
-      - name: Zdekompresuj obrazy lz4
-        run: |
-          cd base_extracted
+          cd extracted
           for f in *.lz4; do
             [ -f "$f" ] || continue
             echo "Dekompresuję: $f"
             lz4 -d "$f" "${f%.lz4}"
             rm "$f"
           done
-          echo "=== Rozpakowane obrazy bazy ==="
-          ls -lh *.img 2>/dev/null || echo "Brak .img"
+          ls -lh
 
-      # ── Rozbijanie kontenera super.img na podobrazy ──────────────────────
-      - name: Unpack super.img to get sub-images
+      # ── Konwersja sparse -> raw (jeśli potrzebna) ───────────────────────
+      - name: Convert sparse images to raw (if needed)
         run: |
-          mkdir -p partitions
-          
-          SUPER_PATH=$(find base_extracted -name "super.img" | head -1)
-          
-          if [ -z "$SUPER_PATH" ]; then
-            echo "BŁĄD: Nie znaleziono pliku super.img w base_extracted!"
-            ls -R base_extracted
-            exit 1
-          fi
-
-          if file "$SUPER_PATH" | grep -q "Android sparse image"; then
-            echo "Converting sparse super.img to raw..."
-            simg2img "$SUPER_PATH" base_extracted/super_raw.img
-            lpunpack base_extracted/super_raw.img partitions/
-          else
-            lpunpack "$SUPER_PATH" partitions/
-          fi
-          
-          echo "===== Extracted partitions from super ====="
-          ls -lh partitions/
-
-      # ── Łatanie partycji dynamicznych przez BlockImageUpdate ─────────────
-      - name: Patch ALL dynamic partitions
-        run: |
-          echo "===== STARTING AUTOMATIC LOOP PATCHING ====="
-          
-          for list in ota_extracted/*.transfer.list; do
-            [ -e "$list" ] || continue
-            part_name=$(basename "$list" .transfer.list)
-            
-            echo "Processing partition: $part_name"
-            
-            if [ -f "partitions/${part_name}.img" ]; then
-              ./IMG_Patch_Tools_0.3/Linux_x64/BlockImageUpdate \
-                "partitions/${part_name}.img" \
-                "ota_extracted/${part_name}.transfer.list" \
-                "ota_extracted/${part_name}.new.dat" \
-                "ota_extracted/${part_name}.patch.dat"
-            else
-              echo "WARNING: Base image for $part_name not found in partitions, skipping!"
+          cd extracted
+          for f in *.img; do
+            [ -f "$f" ] || continue
+            if file "$f" | grep -q "Android sparse image"; then
+              echo "Konwertuję sparse -> raw: $f"
+              simg2img "$f" "${f%.img}_raw.img"
+              rm "$f"
+              mv "${f%.img}_raw.img" "$f"
             fi
           done
+          ls -lh
 
-      # ── Pakowanie wybranych partycji do ZIP ──────────────────────────────
-      - name: Pakowanie system, vendor i product do ZIP
+      # ── Wypakowywanie zawartości każdego .img ────────────────────────────
+      - name: Extract contents from each .img
         run: |
-          mkdir -p final_output
-          
-          echo "=== Sprawdzanie dostępności załatanych obrazów ==="
-          ls -lh partitions/
-          
-          # Agresywne czyszczenie ciężkich folderów, żeby nie zapchać dysku przed pakowaniem zip
-          echo "Czyszczenie pozostałości w celu odzyskania miejsca..."
-          rm -rf base_fw ota ota_extracted base_extracted csc_fw csc_extracted
+          mkdir -p img_contents
+          sudo mkdir -p /mnt/img_mount
 
-          echo "=== Pakowanie wybranych partycji do ZIP ==="
-          cd partitions
-          
-          ZIP_NAME="Patched_ROM_Images.zip"
-          
-          # Pakujemy tylko system.img, vendor.img i product.img (jeśli istnieją)
-          zip -9 "../final_output/$ZIP_NAME" system.img system_ext.img product.img || true
-          
-          cd ..
-          
-          echo "=== Zawartość folderu wyjściowego ==="
-          ls -lh final_output/
-          
-          echo "=== Wolne miejsce na dysku ==="
+          for img in extracted/*.img; do
+            [ -f "$img" ] || continue
+            name=$(basename "$img" .img)
+            echo "=============================="
+            echo "Montuję i wypakowuję: $img -> img_contents/$name/"
+            echo "=============================="
+
+            mkdir -p "img_contents/$name"
+
+            sudo mount -o loop,ro "$img" /mnt/img_mount 2>/dev/null \
+              || sudo mount -o loop,ro,errors=continue "$img" /mnt/img_mount
+
+            sudo cp -a /mnt/img_mount/. "img_contents/$name/"
+            sudo umount /mnt/img_mount
+
+            echo "=== Zawartość $name ==="
+            ls -lh "img_contents/$name/" | head -20
+          done
+
+          echo "=== Wolne miejsce po ekstrakcji ==="
           df -h /
 
-      # ── Upload do GitHub Artifacts (Zapas) ──────────────────────────────
-      - name: Upload ZIP do Artifacts
+      # ── Usuwanie ciężkich artefaktów przed pakowaniem ───────────────────
+      - name: Cleanup before packing
+        run: |
+          rm -rf extracted
+          df -h /
+
+      # ── Pakowanie zawartości do ZIP ──────────────────────────────────────
+      - name: Pack extracted contents into ZIP
+        run: |
+          mkdir -p final_output
+          echo "=== Pakowanie img_contents/ do ZIP ==="
+
+          cd img_contents
+          zip -0 -r ../final_output/ROM_Contents.zip .
+          cd ..
+
+          echo "=== Wynikowy ZIP ==="
+          ls -lh final_output/
+          df -h /
+
+      # ── Upload do GitHub Artifacts ───────────────────────────────────────
+      - name: Upload ZIP to Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Patched_ROM_ZIP
-          path: final_output/*.zip
+          name: ROM_Contents_ZIP
+          path: final_output/ROM_Contents.zip
           retention-days: 5
-
-      # ── Upload na PixelDrain ─────────────────────────────────────────────
-      - name: Upload na PixelDrain
-        env:
-          PIXELDRAIN_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
-        run: |
-          ZIP_FILE="final_output/Patched_ROM_Images.zip"
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "Plik $ZIP_FILE nie istnieje!"
-            exit 1
-          fi
-          echo "Przesyłanie pliku $ZIP_FILE na PixelDrain..."
-          RESPONSE=$(curl -s -X PUT -T "$ZIP_FILE" -u :$PIXELDRAIN_API_KEY "https://pixeldrain.com/api/file/$(basename "$ZIP_FILE")")
-          echo "Odpowiedź: $RESPONSE"
-          # Wyodrębnij ID pliku
-          FILE_ID=$(echo "$RESPONSE" | jq -r '.id')
-          if [ "$FILE_ID" != "null" ] && [ -n "$FILE_ID" ]; then
-            echo "Plik przesłany pomyślnie!"
-            echo "Link do pliku: https://pixeldrain.com/u/$FILE_ID"
-            echo "Link do pobrania: https://pixeldrain.com/api/file/$FILE_ID?download"
-          else
-            echo "Błąd przesyłania: $RESPONSE"
-            exit 1
-          fi
